@@ -15,31 +15,34 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('gym');
   const [gymSubTab, setGymSubTab] = useState('templates');
 
+  // Gym State
   const [templates, setTemplates] = useState([]);
   const [activeWorkout, setActiveWorkout] = useState(null);
   const [history, setHistory] = useState([]);
+  const [editingLog, setEditingLog] = useState(null);
 
   const [showNewTemplate, setShowNewTemplate] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateExercises, setNewTemplateExercises] = useState(['']);
 
+  // Nutrition State
   const [nutritionLogs, setNutritionLogs] = useState([]);
-  const [foodName, setFoodName] = useState('');
-  const [calories, setCalories] = useState('');
-  const [protein, setProtein] = useState('');
-  const [carbs, setCarbs] = useState('');
-  const [fat, setFat] = useState('');
+  const [mealLibrary, setMealLibrary] = useState([]);
+  const [mealSlots, setMealSlots] = useState(['Breakfast', 'Lunch', 'Dinner', 'Snack']);
+  const [newSlotName, setNewSlotName] = useState('');
 
-  // PERSISTENT SESSION HANDLING
+  // Library Form
+  const [libName, setLibName] = useState('');
+  const [libCal, setLibCal] = useState('');
+  const [libPro, setLibPro] = useState('');
+  const [libCarb, setLibCarb] = useState('');
+  const [libFat, setLibFat] = useState('');
+  const [showAddLib, setShowAddLib] = useState(false);
+
+  // Auth & Init
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setSession(session));
     return () => subscription.unsubscribe();
   }, []);
 
@@ -48,10 +51,10 @@ export default function App() {
       fetchTemplates();
       fetchHistory();
       fetchNutrition();
+      fetchMealLibrary();
     }
   }, [session]);
 
-  // AUTH HANDLERS
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
@@ -67,7 +70,7 @@ export default function App() {
 
   const handleLogout = () => supabase.auth.signOut();
 
-  // FETCH DATA
+  // Data Fetching
   const fetchTemplates = async () => {
     const { data } = await supabase.from('templates').select('*').order('created_at', { ascending: false });
     if (data) setTemplates(data);
@@ -83,9 +86,12 @@ export default function App() {
     if (data) setNutritionLogs(data);
   };
 
-  // GYM HANDLERS
-  const handleAddExerciseToTemplate = () => setNewTemplateExercises([...newTemplateExercises, '']);
+  const fetchMealLibrary = async () => {
+    const { data } = await supabase.from('meal_library').select('*').order('created_at', { ascending: false });
+    if (data) setMealLibrary(data);
+  };
 
+  // GYM HANDLERS
   const handleSaveTemplate = async () => {
     if (!newTemplateName.trim()) return;
     const exercisesList = newTemplateExercises
@@ -129,11 +135,7 @@ export default function App() {
   const finishWorkout = async () => {
     if (!activeWorkout) return;
     const { error } = await supabase.from('workout_logs').insert([
-      {
-        template_name: activeWorkout.name,
-        exercises: activeWorkout.exercises,
-        user_id: session.user.id,
-      },
+      { template_name: activeWorkout.name, exercises: activeWorkout.exercises, user_id: session.user.id },
     ]);
 
     if (!error) {
@@ -143,26 +145,65 @@ export default function App() {
     }
   };
 
-  // NUTRITION HANDLERS
-  const handleLogNutrition = async (e) => {
-    e.preventDefault();
-    if (!foodName) return;
+  const deleteWorkoutLog = async (id) => {
+    if (!window.confirm('Delete this workout log?')) return;
+    const { error } = await supabase.from('workout_logs').delete().eq('id', id);
+    if (!error) setHistory(history.filter((item) => item.id !== id));
+  };
 
+  const handleUpdateLog = async () => {
+    if (!editingLog) return;
+    const { error } = await supabase
+      .from('workout_logs')
+      .update({ exercises: editingLog.exercises })
+      .eq('id', editingLog.id);
+
+    if (!error) {
+      setEditingLog(null);
+      fetchHistory();
+    }
+  };
+
+  // NUTRITION & MEAL LIBRARY HANDLERS
+  const handleSaveToLibrary = async (e) => {
+    e.preventDefault();
+    if (!libName) return;
+
+    const meal = {
+      name: libName,
+      calories: Number(libCal) || 0,
+      protein: Number(libPro) || 0,
+      carbs: Number(libCarb) || 0,
+      fat: Number(libFat) || 0,
+      user_id: session.user.id,
+    };
+
+    const { data, error } = await supabase.from('meal_library').insert([meal]).select();
+    if (!error && data) {
+      setMealLibrary([data[0], ...mealLibrary]);
+      setLibName(''); setLibCal(''); setLibPro(''); setLibCarb(''); setLibFat('');
+      setShowAddLib(false);
+    }
+  };
+
+  const deleteLibraryMeal = async (id) => {
+    const { error } = await supabase.from('meal_library').delete().eq('id', id);
+    if (!error) setMealLibrary(mealLibrary.filter((item) => item.id !== id));
+  };
+
+  const logMealFromLibrary = async (slotName, libraryMeal) => {
     const log = {
-      food_name: foodName,
-      calories: Number(calories) || 0,
-      protein: Number(protein) || 0,
-      carbs: Number(carbs) || 0,
-      fat: Number(fat) || 0,
+      food_name: libraryMeal.name,
+      calories: libraryMeal.calories,
+      protein: libraryMeal.protein,
+      carbs: libraryMeal.carbs,
+      fat: libraryMeal.fat,
+      slot_name: slotName,
       user_id: session.user.id,
     };
 
     const { data, error } = await supabase.from('nutrition_logs').insert([log]).select();
-
-    if (!error && data) {
-      setNutritionLogs([data[0], ...nutritionLogs]);
-      setFoodName(''); setCalories(''); setProtein(''); setCarbs(''); setFat('');
-    }
+    if (!error && data) setNutritionLogs([data[0], ...nutritionLogs]);
   };
 
   const deleteNutritionLog = async (id) => {
@@ -170,45 +211,35 @@ export default function App() {
     if (!error) setNutritionLogs(nutritionLogs.filter((item) => item.id !== id));
   };
 
+  const handleAddSlot = () => {
+    if (newSlotName.trim() && !mealSlots.includes(newSlotName.trim())) {
+      setMealSlots([...mealSlots, newSlotName.trim()]);
+      setNewSlotName('');
+    }
+  };
+
+  const removeSlot = (slotToRemove) => {
+    setMealSlots(mealSlots.filter((s) => s !== slotToRemove));
+  };
+
+  // Totals
   const totalCal = nutritionLogs.reduce((acc, curr) => acc + (curr.calories || 0), 0);
   const totalPro = nutritionLogs.reduce((acc, curr) => acc + (curr.protein || 0), 0);
   const totalCarb = nutritionLogs.reduce((acc, curr) => acc + (curr.carbs || 0), 0);
   const totalFat = nutritionLogs.reduce((acc, curr) => acc + (curr.fat || 0), 0);
 
-  // AUTH SCREEN IF NOT LOGGED IN
   if (!session) {
     return (
       <div style={styles.appContainer}>
-        <header style={styles.header}>
-          <h1 style={styles.title}>LOCKED IN</h1>
-        </header>
+        <header style={styles.header}><h1 style={styles.title}>LOCKED IN</h1></header>
         <main style={styles.content}>
           <form onSubmit={handleAuth} style={styles.card}>
             <h3>{isSignUp ? 'Create Account' : 'Welcome Back'}</h3>
             {authError && <p style={{ color: '#FF5252', fontSize: '0.85rem' }}>{authError}</p>}
-            <input
-              type="email"
-              placeholder="Email address"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={styles.input}
-              required
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={styles.input}
-              required
-            />
-            <button type="submit" style={styles.primaryBtn}>
-              {isSignUp ? 'Sign Up' : 'Log In'}
-            </button>
-            <p
-              style={{ color: '#00E676', textAlign: 'center', cursor: 'pointer', marginTop: '12px', fontSize: '0.9rem' }}
-              onClick={() => setIsSignUp(!isSignUp)}
-            >
+            <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} style={styles.input} required />
+            <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} style={styles.input} required />
+            <button type="submit" style={styles.primaryBtn}>{isSignUp ? 'Sign Up' : 'Log In'}</button>
+            <p style={{ color: '#00E676', textAlign: 'center', cursor: 'pointer', marginTop: '12px', fontSize: '0.9rem' }} onClick={() => setIsSignUp(!isSignUp)}>
               {isSignUp ? 'Already have an account? Log In' : "Don't have an account? Sign Up"}
             </p>
           </form>
@@ -229,21 +260,12 @@ export default function App() {
           <div>
             {!activeWorkout && (
               <div style={styles.subTabNav}>
-                <button
-                  style={gymSubTab === 'templates' ? styles.activeSubTab : styles.subTab}
-                  onClick={() => setGymSubTab('templates')}
-                >
-                  Templates
-                </button>
-                <button
-                  style={gymSubTab === 'history' ? styles.activeSubTab : styles.subTab}
-                  onClick={() => setGymSubTab('history')}
-                >
-                  History
-                </button>
+                <button style={gymSubTab === 'templates' ? styles.activeSubTab : styles.subTab} onClick={() => setGymSubTab('templates')}>Templates</button>
+                <button style={gymSubTab === 'history' ? styles.activeSubTab : styles.subTab} onClick={() => setGymSubTab('history')}>History</button>
               </div>
             )}
 
+            {/* ACTIVE WORKOUT MODE */}
             {activeWorkout ? (
               <div style={styles.card}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -257,21 +279,9 @@ export default function App() {
                     {ex.sets.map((set, sIdx) => (
                       <div key={sIdx} style={styles.setRow}>
                         <span style={{ color: '#888', width: '20px' }}>#{sIdx + 1}</span>
-                        <input
-                          type="number"
-                          placeholder="Lbs"
-                          value={set.weight}
-                          onChange={(e) => updateSet(exIdx, sIdx, 'weight', e.target.value)}
-                          style={styles.setFormInput}
-                        />
+                        <input type="number" placeholder="Lbs" value={set.weight} onChange={(e) => updateSet(exIdx, sIdx, 'weight', e.target.value)} style={styles.setFormInput} />
                         <span style={{ color: '#888' }}>lbs x</span>
-                        <input
-                          type="number"
-                          placeholder="Reps"
-                          value={set.reps}
-                          onChange={(e) => updateSet(exIdx, sIdx, 'reps', e.target.value)}
-                          style={styles.setFormInput}
-                        />
+                        <input type="number" placeholder="Reps" value={set.reps} onChange={(e) => updateSet(exIdx, sIdx, 'reps', e.target.value)} style={styles.setFormInput} />
                         <span style={{ color: '#888' }}>reps</span>
                         <button style={styles.iconBtn} onClick={() => removeSet(exIdx, sIdx)}>✕</button>
                       </div>
@@ -290,30 +300,15 @@ export default function App() {
                   ) : (
                     <div style={styles.card}>
                       <h3>New Template</h3>
-                      <input
-                        type="text"
-                        placeholder="Template Name (e.g. Push Day)"
-                        value={newTemplateName}
-                        onChange={(e) => setNewTemplateName(e.target.value)}
-                        style={styles.input}
-                      />
+                      <input type="text" placeholder="Template Name" value={newTemplateName} onChange={(e) => setNewTemplateName(e.target.value)} style={styles.input} />
                       <h4>Exercises</h4>
                       {newTemplateExercises.map((ex, idx) => (
-                        <input
-                          key={idx}
-                          type="text"
-                          placeholder={`Exercise ${idx + 1}`}
-                          value={ex}
-                          onChange={(e) => {
-                            const updated = [...newTemplateExercises];
-                            updated[idx] = e.target.value;
-                            setNewTemplateExercises(updated);
-                          }}
-                          style={{ ...styles.input, marginBottom: '8px' }}
-                        />
+                        <input key={idx} type="text" placeholder={`Exercise ${idx + 1}`} value={ex} onChange={(e) => {
+                          const updated = [...newTemplateExercises]; updated[idx] = e.target.value; setNewTemplateExercises(updated);
+                        }} style={{ ...styles.input, marginBottom: '8px' }} />
                       ))}
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button style={styles.secondaryBtn} onClick={handleAddExerciseToTemplate}>+ Add Exercise</button>
+                        <button style={styles.secondaryBtn} onClick={() => setNewTemplateExercises([...newTemplateExercises, ''])}>+ Add Exercise</button>
                         <button style={styles.primaryBtn} onClick={handleSaveTemplate}>Save Template</button>
                       </div>
                     </div>
@@ -322,9 +317,7 @@ export default function App() {
                   {templates.map((tpl) => (
                     <div key={tpl.id} style={styles.card}>
                       <h3 style={{ margin: '0 0 8px 0' }}>{tpl.name}</h3>
-                      <p style={{ color: '#AAA', fontSize: '0.9rem', marginBottom: '12px' }}>
-                        {tpl.exercises ? tpl.exercises.map((e) => e.name).join(', ') : 'No exercises'}
-                      </p>
+                      <p style={{ color: '#AAA', fontSize: '0.9rem', marginBottom: '12px' }}>{tpl.exercises ? tpl.exercises.map((e) => e.name).join(', ') : 'No exercises'}</p>
                       <button style={styles.startBtn} onClick={() => startWorkout(tpl)}>Start Workout</button>
                     </div>
                   ))}
@@ -332,22 +325,66 @@ export default function App() {
               )
             )}
 
+            {/* WORKOUT HISTORY SUB-TAB */}
             {!activeWorkout && gymSubTab === 'history' && (
               <div>
+                {/* LOG EDITING MODAL */}
+                {editingLog && (
+                  <div style={{ ...styles.card, borderColor: '#00E676' }}>
+                    <h3 style={{ color: '#00E676' }}>Editing: {editingLog.template_name}</h3>
+                    {editingLog.exercises.map((ex, exIdx) => (
+                      <div key={exIdx} style={styles.exerciseBox}>
+                        <h4 style={{ margin: '0 0 8px 0', color: '#FFF' }}>{ex.name}</h4>
+                        {ex.sets.map((set, sIdx) => (
+                          <div key={sIdx} style={styles.setRow}>
+                            <span style={{ color: '#888' }}>#{sIdx + 1}</span>
+                            <input
+                              type="number"
+                              value={set.weight}
+                              onChange={(e) => {
+                                const updated = { ...editingLog };
+                                updated.exercises[exIdx].sets[sIdx].weight = Number(e.target.value);
+                                setEditingLog(updated);
+                              }}
+                              style={styles.setFormInput}
+                            />
+                            <span style={{ color: '#888' }}>lbs</span>
+                            <input
+                              type="number"
+                              value={set.reps}
+                              onChange={(e) => {
+                                const updated = { ...editingLog };
+                                updated.exercises[exIdx].sets[sIdx].reps = Number(e.target.value);
+                                setEditingLog(updated);
+                              }}
+                              style={styles.setFormInput}
+                            />
+                            <span style={{ color: '#888' }}>reps</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button style={styles.primaryBtn} onClick={handleUpdateLog}>Save Changes</button>
+                      <button style={{ ...styles.secondaryBtn, width: '100%', marginTop: '8px' }} onClick={() => setEditingLog(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+
                 {history.map((log) => (
                   <div key={log.id} style={styles.card}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', alignItems: 'center' }}>
                       <strong style={{ color: '#00E676' }}>{log.template_name}</strong>
-                      <span style={{ color: '#666', fontSize: '0.8rem' }}>
-                        {new Date(log.completed_at).toLocaleDateString()}
-                      </span>
+                      <div>
+                        <button style={{ ...styles.secondaryBtn, padding: '2px 8px', fontSize: '0.75rem', marginRight: '6px' }} onClick={() => setEditingLog(JSON.parse(JSON.stringify(log)))}>Edit</button>
+                        <button style={{ ...styles.cancelBtn, fontSize: '0.85rem' }} onClick={() => deleteWorkoutLog(log.id)}>✕</button>
+                      </div>
                     </div>
+                    <span style={{ color: '#666', fontSize: '0.75rem', display: 'block', marginBottom: '8px' }}>{new Date(log.completed_at).toLocaleDateString()}</span>
                     {log.exercises?.map((ex, idx) => (
                       <div key={idx} style={{ marginBottom: '6px' }}>
                         <div style={{ fontSize: '0.9rem', color: '#DDD' }}>{ex.name}</div>
-                        <div style={{ fontSize: '0.8rem', color: '#888' }}>
-                          {ex.sets?.map((s) => `${s.weight}lbs × ${s.reps}`).join(' | ')}
-                        </div>
+                        <div style={{ fontSize: '0.8rem', color: '#888' }}>{ex.sets?.map((s) => `${s.weight}lbs × ${s.reps}`).join(' | ')}</div>
                       </div>
                     ))}
                   </div>
@@ -356,6 +393,7 @@ export default function App() {
             )}
           </div>
         ) : (
+          /* NUTRITION & MEAL LIBRARY TAB */
           <div>
             <div style={styles.macroGrid}>
               <div style={styles.macroCard}><span style={styles.macroVal}>{totalCal}</span><span style={styles.macroLbl}>Calories</span></div>
@@ -364,29 +402,96 @@ export default function App() {
               <div style={styles.macroCard}><span style={styles.macroVal}>{totalFat}g</span><span style={styles.macroLbl}>Fat</span></div>
             </div>
 
-            <form onSubmit={handleLogNutrition} style={styles.card}>
-              <h3>Log Food</h3>
-              <input type="text" placeholder="Food Name" value={foodName} onChange={(e) => setFoodName(e.target.value)} style={styles.input} />
-              <div style={styles.grid2x2}>
-                <input type="number" placeholder="Calories" value={calories} onChange={(e) => setCalories(e.target.value)} style={styles.input} />
-                <input type="number" placeholder="Protein (g)" value={protein} onChange={(e) => setProtein(e.target.value)} style={styles.input} />
-                <input type="number" placeholder="Carbs (g)" value={carbs} onChange={(e) => setCarbs(e.target.value)} style={styles.input} />
-                <input type="number" placeholder="Fat (g)" value={fat} onChange={(e) => setFat(e.target.value)} style={styles.input} />
+            {/* MEAL LIBRARY MANAGEMENT */}
+            <div style={styles.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0 }}>Meal Library</h3>
+                <button style={styles.secondaryBtn} onClick={() => setShowAddLib(!showAddLib)}>{showAddLib ? 'Close' : '+ Saved Meal'}</button>
               </div>
-              <button type="submit" style={styles.primaryBtn}>Add Food Entry</button>
-            </form>
 
-            {nutritionLogs.map((item) => (
-              <div key={item.id} style={styles.logItem}>
-                <div>
-                  <strong>{item.food_name}</strong>
-                  <div style={{ fontSize: '0.8rem', color: '#888' }}>
-                    {item.calories} kcal | P: {item.protein}g | C: {item.carbs}g | F: {item.fat}g
+              {showAddLib && (
+                <form onSubmit={handleSaveToLibrary} style={{ marginTop: '12px' }}>
+                  <input type="text" placeholder="Meal Name (e.g. Chicken & Rice)" value={libName} onChange={(e) => setLibName(e.target.value)} style={styles.input} required />
+                  <div style={styles.grid2x2}>
+                    <input type="number" placeholder="Calories" value={libCal} onChange={(e) => setLibCal(e.target.value)} style={styles.input} />
+                    <input type="number" placeholder="Protein (g)" value={libPro} onChange={(e) => setLibPro(e.target.value)} style={styles.input} />
+                    <input type="number" placeholder="Carbs (g)" value={libCarb} onChange={(e) => setLibCarb(e.target.value)} style={styles.input} />
+                    <input type="number" placeholder="Fat (g)" value={libFat} onChange={(e) => setLibFat(e.target.value)} style={styles.input} />
                   </div>
-                </div>
-                <button style={styles.cancelBtn} onClick={() => deleteNutritionLog(item.id)}>✕</button>
+                  <button type="submit" style={styles.primaryBtn}>Save Meal to Library</button>
+                </form>
+              )}
+
+              <div style={{ marginTop: '12px' }}>
+                {mealLibrary.length === 0 ? (
+                  <p style={{ color: '#666', fontSize: '0.85rem' }}>No saved meals yet. Add one above!</p>
+                ) : (
+                  mealLibrary.map((m) => (
+                    <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #2A2A2A' }}>
+                      <div>
+                        <strong>{m.name}</strong>
+                        <div style={{ color: '#888', fontSize: '0.75rem' }}>{m.calories} kcal | P:{m.protein}g C:{m.carbs}g F:{m.fat}g</div>
+                      </div>
+                      <button style={styles.cancelBtn} onClick={() => deleteLibraryMeal(m.id)}>✕</button>
+                    </div>
+                  ))
+                )}
               </div>
-            ))}
+            </div>
+
+            {/* DAILY MEAL SLOTS */}
+            <div style={{ margin: '16px 0' }}>
+              <h3>Today's Meals</h3>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                <input type="text" placeholder="Add Slot Name (e.g., Pre-Workout)" value={newSlotName} onChange={(e) => setNewSlotName(e.target.value)} style={{ ...styles.input, marginBottom: 0 }} />
+                <button style={styles.secondaryBtn} onClick={handleAddSlot}>+ Slot</button>
+              </div>
+
+              {mealSlots.map((slot) => {
+                const logsInSlot = nutritionLogs.filter((l) => (l.slot_name || 'Breakfast') === slot);
+                return (
+                  <div key={slot} style={styles.card}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <h4 style={{ margin: 0, color: '#00E676' }}>{slot}</h4>
+                      <button style={{ ...styles.cancelBtn, fontSize: '0.8rem' }} onClick={() => removeSlot(slot)}>Remove Slot</button>
+                    </div>
+
+                    {/* Quick Log Selector */}
+                    {mealLibrary.length > 0 && (
+                      <select
+                        onChange={(e) => {
+                          const meal = mealLibrary.find((m) => m.id === e.target.value);
+                          if (meal) logMealFromLibrary(slot, meal);
+                          e.target.value = '';
+                        }}
+                        style={{ ...styles.input, backgroundColor: '#1A1A1A' }}
+                      >
+                        <option value="">+ Add meal from library...</option>
+                        {mealLibrary.map((m) => (
+                          <option key={m.id} value={m.id}>{m.name} ({m.calories} kcal)</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {logsInSlot.length === 0 ? (
+                      <p style={{ color: '#666', fontSize: '0.8rem', margin: '4px 0' }}>Empty</p>
+                    ) : (
+                      logsInSlot.map((item) => (
+                        <div key={item.id} style={styles.logItem}>
+                          <div>
+                            <strong>{item.food_name}</strong>
+                            <div style={{ fontSize: '0.75rem', color: '#888' }}>
+                              {item.calories} kcal | P: {item.protein}g | C: {item.carbs}g | F: {item.fat}g
+                            </div>
+                          </div>
+                          <button style={styles.cancelBtn} onClick={() => deleteNutritionLog(item.id)}>✕</button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </main>
@@ -423,7 +528,7 @@ const styles = {
   macroVal: { display: 'block', fontSize: '1rem', fontWeight: 'bold', color: '#00E676' },
   macroLbl: { fontSize: '0.7rem', color: '#888' },
   grid2x2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
-  logItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', backgroundColor: '#1E1E1E', borderRadius: '8px', marginBottom: '8px', border: '1px solid #2A2A2A' },
+  logItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: '#252525', borderRadius: '6px', marginTop: '8px' },
   bottomNav: { position: 'fixed', bottom: 0, left: 0, right: 0, height: '60px', backgroundColor: '#1E1E1E', borderTop: '1px solid #2C2C2C', display: 'flex', justifyContent: 'space-around', alignItems: 'center' },
   navBtn: { background: 'none', border: 'none', color: '#666', fontSize: '1rem', cursor: 'pointer' },
   activeNavBtn: { background: 'none', border: 'none', color: '#00E676', fontSize: '1rem', fontWeight: 'bold', cursor: 'pointer' },
