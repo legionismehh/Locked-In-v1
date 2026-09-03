@@ -1,25 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://placeholder.supabase.co';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'placeholder-key';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('gym'); // 'gym' or 'nutrition'
-  const [gymSubTab, setGymSubTab] = useState('templates'); // 'templates' or 'history'
+  const [session, setSession] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authError, setAuthError] = useState('');
 
-  // Templates & Active Workout State
+  const [activeTab, setActiveTab] = useState('gym');
+  const [gymSubTab, setGymSubTab] = useState('templates');
+
   const [templates, setTemplates] = useState([]);
-  const [activeWorkout, setActiveWorkout] = useState(null); // Active session data
+  const [activeWorkout, setActiveWorkout] = useState(null);
   const [history, setHistory] = useState([]);
 
-  // New Template Form State
   const [showNewTemplate, setShowNewTemplate] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateExercises, setNewTemplateExercises] = useState(['']);
 
-  // Nutrition State
   const [nutritionLogs, setNutritionLogs] = useState([]);
   const [foodName, setFoodName] = useState('');
   const [calories, setCalories] = useState('');
@@ -27,13 +30,44 @@ export default function App() {
   const [carbs, setCarbs] = useState('');
   const [fat, setFat] = useState('');
 
+  // PERSISTENT SESSION HANDLING
   useEffect(() => {
-    fetchTemplates();
-    fetchHistory();
-    fetchNutrition();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // --- SUPABASE FETCH HELPERS ---
+  useEffect(() => {
+    if (session) {
+      fetchTemplates();
+      fetchHistory();
+      fetchNutrition();
+    }
+  }, [session]);
+
+  // AUTH HANDLERS
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    if (isSignUp) {
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) setAuthError(error.message);
+      else alert('Account created! You can now log in.');
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) setAuthError(error.message);
+    }
+  };
+
+  const handleLogout = () => supabase.auth.signOut();
+
+  // FETCH DATA
   const fetchTemplates = async () => {
     const { data } = await supabase.from('templates').select('*').order('created_at', { ascending: false });
     if (data) setTemplates(data);
@@ -49,10 +83,8 @@ export default function App() {
     if (data) setNutritionLogs(data);
   };
 
-  // --- TEMPLATE CREATION ---
-  const handleAddExerciseToTemplate = () => {
-    setNewTemplateExercises([...newTemplateExercises, '']);
-  };
+  // GYM HANDLERS
+  const handleAddExerciseToTemplate = () => setNewTemplateExercises([...newTemplateExercises, '']);
 
   const handleSaveTemplate = async () => {
     if (!newTemplateName.trim()) return;
@@ -62,7 +94,7 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('templates')
-      .insert([{ name: newTemplateName, exercises: exercisesList }])
+      .insert([{ name: newTemplateName, exercises: exercisesList, user_id: session.user.id }])
       .select();
 
     if (!error && data) {
@@ -73,10 +105,7 @@ export default function App() {
     }
   };
 
-  // --- ACTIVE WORKOUT HANDLERS ---
-  const startWorkout = (template) => {
-    setActiveWorkout(JSON.parse(JSON.stringify(template))); // Deep clone template
-  };
+  const startWorkout = (template) => setActiveWorkout(JSON.parse(JSON.stringify(template)));
 
   const updateSet = (exIndex, setIndex, field, value) => {
     const updated = { ...activeWorkout };
@@ -103,6 +132,7 @@ export default function App() {
       {
         template_name: activeWorkout.name,
         exercises: activeWorkout.exercises,
+        user_id: session.user.id,
       },
     ]);
 
@@ -113,7 +143,7 @@ export default function App() {
     }
   };
 
-  // --- NUTRITION HANDLERS ---
+  // NUTRITION HANDLERS
   const handleLogNutrition = async (e) => {
     e.preventDefault();
     if (!foodName) return;
@@ -124,45 +154,79 @@ export default function App() {
       protein: Number(protein) || 0,
       carbs: Number(carbs) || 0,
       fat: Number(fat) || 0,
+      user_id: session.user.id,
     };
 
     const { data, error } = await supabase.from('nutrition_logs').insert([log]).select();
 
     if (!error && data) {
       setNutritionLogs([data[0], ...nutritionLogs]);
-      setFoodName('');
-      setCalories('');
-      setProtein('');
-      setCarbs('');
-      setFat('');
+      setFoodName(''); setCalories(''); setProtein(''); setCarbs(''); setFat('');
     }
   };
 
   const deleteNutritionLog = async (id) => {
     const { error } = await supabase.from('nutrition_logs').delete().eq('id', id);
-    if (!error) {
-      setNutritionLogs(nutritionLogs.filter((item) => item.id !== id));
-    }
+    if (!error) setNutritionLogs(nutritionLogs.filter((item) => item.id !== id));
   };
 
-  // Nutrition Totals Calculation
   const totalCal = nutritionLogs.reduce((acc, curr) => acc + (curr.calories || 0), 0);
   const totalPro = nutritionLogs.reduce((acc, curr) => acc + (curr.protein || 0), 0);
   const totalCarb = nutritionLogs.reduce((acc, curr) => acc + (curr.carbs || 0), 0);
   const totalFat = nutritionLogs.reduce((acc, curr) => acc + (curr.fat || 0), 0);
 
+  // AUTH SCREEN IF NOT LOGGED IN
+  if (!session) {
+    return (
+      <div style={styles.appContainer}>
+        <header style={styles.header}>
+          <h1 style={styles.title}>LOCKED IN</h1>
+        </header>
+        <main style={styles.content}>
+          <form onSubmit={handleAuth} style={styles.card}>
+            <h3>{isSignUp ? 'Create Account' : 'Welcome Back'}</h3>
+            {authError && <p style={{ color: '#FF5252', fontSize: '0.85rem' }}>{authError}</p>}
+            <input
+              type="email"
+              placeholder="Email address"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={styles.input}
+              required
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={styles.input}
+              required
+            />
+            <button type="submit" style={styles.primaryBtn}>
+              {isSignUp ? 'Sign Up' : 'Log In'}
+            </button>
+            <p
+              style={{ color: '#00E676', textAlign: 'center', cursor: 'pointer', marginTop: '12px', fontSize: '0.9rem' }}
+              onClick={() => setIsSignUp(!isSignUp)}
+            >
+              {isSignUp ? 'Already have an account? Log In' : "Don't have an account? Sign Up"}
+            </p>
+          </form>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.appContainer}>
-      {/* HEADER */}
-      <header style={styles.header}>
+      <header style={{ ...styles.header, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={styles.title}>LOCKED IN</h1>
+        <button style={styles.logoutBtn} onClick={handleLogout}>Log Out</button>
       </header>
 
-      {/* MAIN CONTENT AREA */}
       <main style={styles.content}>
         {activeTab === 'gym' ? (
           <div>
-            {/* SUB NAVIGATION FOR GYM */}
             {!activeWorkout && (
               <div style={styles.subTabNav}>
                 <button
@@ -180,14 +244,11 @@ export default function App() {
               </div>
             )}
 
-            {/* ACTIVE WORKOUT SESSION */}
             {activeWorkout ? (
               <div style={styles.card}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <h2 style={{ color: '#00E676', margin: 0 }}>Active: {activeWorkout.name}</h2>
-                  <button style={styles.cancelBtn} onClick={() => setActiveWorkout(null)}>
-                    Cancel
-                  </button>
+                  <button style={styles.cancelBtn} onClick={() => setActiveWorkout(null)}>Cancel</button>
                 </div>
 
                 {activeWorkout.exercises.map((ex, exIdx) => (
@@ -212,29 +273,20 @@ export default function App() {
                           style={styles.setFormInput}
                         />
                         <span style={{ color: '#888' }}>reps</span>
-                        <button style={styles.iconBtn} onClick={() => removeSet(exIdx, sIdx)}>
-                          ✕
-                        </button>
+                        <button style={styles.iconBtn} onClick={() => removeSet(exIdx, sIdx)}>✕</button>
                       </div>
                     ))}
-                    <button style={styles.secondaryBtn} onClick={() => addSet(exIdx)}>
-                      + Add Set
-                    </button>
+                    <button style={styles.secondaryBtn} onClick={() => addSet(exIdx)}>+ Add Set</button>
                   </div>
                 ))}
 
-                <button style={styles.primaryBtn} onClick={finishWorkout}>
-                  Finish & Save Workout
-                </button>
+                <button style={styles.primaryBtn} onClick={finishWorkout}>Finish & Save Workout</button>
               </div>
             ) : (
-              /* TEMPLATES VIEW */
               gymSubTab === 'templates' && (
                 <div>
                   {!showNewTemplate ? (
-                    <button style={styles.primaryBtn} onClick={() => setShowNewTemplate(true)}>
-                      + Create New Template
-                    </button>
+                    <button style={styles.primaryBtn} onClick={() => setShowNewTemplate(true)}>+ Create New Template</button>
                   ) : (
                     <div style={styles.card}>
                       <h3>New Template</h3>
@@ -261,12 +313,8 @@ export default function App() {
                         />
                       ))}
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button style={styles.secondaryBtn} onClick={handleAddExerciseToTemplate}>
-                          + Add Exercise
-                        </button>
-                        <button style={styles.primaryBtn} onClick={handleSaveTemplate}>
-                          Save Template
-                        </button>
+                        <button style={styles.secondaryBtn} onClick={handleAddExerciseToTemplate}>+ Add Exercise</button>
+                        <button style={styles.primaryBtn} onClick={handleSaveTemplate}>Save Template</button>
                       </div>
                     </div>
                   )}
@@ -275,18 +323,15 @@ export default function App() {
                     <div key={tpl.id} style={styles.card}>
                       <h3 style={{ margin: '0 0 8px 0' }}>{tpl.name}</h3>
                       <p style={{ color: '#AAA', fontSize: '0.9rem', marginBottom: '12px' }}>
-                        {tpl.exercises ? tpl.exercises.map((e) => e.name).join(', ') : 'No exercises listed'}
+                        {tpl.exercises ? tpl.exercises.map((e) => e.name).join(', ') : 'No exercises'}
                       </p>
-                      <button style={styles.startBtn} onClick={() => startWorkout(tpl)}>
-                        Start Workout
-                      </button>
+                      <button style={styles.startBtn} onClick={() => startWorkout(tpl)}>Start Workout</button>
                     </div>
                   ))}
                 </div>
               )
             )}
 
-            {/* HISTORY VIEW */}
             {!activeWorkout && gymSubTab === 'history' && (
               <div>
                 {history.map((log) => (
@@ -311,74 +356,26 @@ export default function App() {
             )}
           </div>
         ) : (
-          /* NUTRITION TAB */
           <div>
-            {/* MACRO SUMMARY CARDS */}
             <div style={styles.macroGrid}>
-              <div style={styles.macroCard}>
-                <span style={styles.macroVal}>{totalCal}</span>
-                <span style={styles.macroLbl}>Calories</span>
-              </div>
-              <div style={styles.macroCard}>
-                <span style={styles.macroVal}>{totalPro}g</span>
-                <span style={styles.macroLbl}>Protein</span>
-              </div>
-              <div style={styles.macroCard}>
-                <span style={styles.macroVal}>{totalCarb}g</span>
-                <span style={styles.macroLbl}>Carbs</span>
-              </div>
-              <div style={styles.macroCard}>
-                <span style={styles.macroVal}>{totalFat}g</span>
-                <span style={styles.macroLbl}>Fat</span>
-              </div>
+              <div style={styles.macroCard}><span style={styles.macroVal}>{totalCal}</span><span style={styles.macroLbl}>Calories</span></div>
+              <div style={styles.macroCard}><span style={styles.macroVal}>{totalPro}g</span><span style={styles.macroLbl}>Protein</span></div>
+              <div style={styles.macroCard}><span style={styles.macroVal}>{totalCarb}g</span><span style={styles.macroLbl}>Carbs</span></div>
+              <div style={styles.macroCard}><span style={styles.macroVal}>{totalFat}g</span><span style={styles.macroLbl}>Fat</span></div>
             </div>
 
-            {/* LOG NUTRITION FORM */}
             <form onSubmit={handleLogNutrition} style={styles.card}>
               <h3>Log Food</h3>
-              <input
-                type="text"
-                placeholder="Food Name (e.g. Chicken Breast)"
-                value={foodName}
-                onChange={(e) => setFoodName(e.target.value)}
-                style={styles.input}
-              />
+              <input type="text" placeholder="Food Name" value={foodName} onChange={(e) => setFoodName(e.target.value)} style={styles.input} />
               <div style={styles.grid2x2}>
-                <input
-                  type="number"
-                  placeholder="Calories"
-                  value={calories}
-                  onChange={(e) => setCalories(e.target.value)}
-                  style={styles.input}
-                />
-                <input
-                  type="number"
-                  placeholder="Protein (g)"
-                  value={protein}
-                  onChange={(e) => setProtein(e.target.value)}
-                  style={styles.input}
-                />
-                <input
-                  type="number"
-                  placeholder="Carbs (g)"
-                  value={carbs}
-                  onChange={(e) => setCarbs(e.target.value)}
-                  style={styles.input}
-                />
-                <input
-                  type="number"
-                  placeholder="Fat (g)"
-                  value={fat}
-                  onChange={(e) => setFat(e.target.value)}
-                  style={styles.input}
-                />
+                <input type="number" placeholder="Calories" value={calories} onChange={(e) => setCalories(e.target.value)} style={styles.input} />
+                <input type="number" placeholder="Protein (g)" value={protein} onChange={(e) => setProtein(e.target.value)} style={styles.input} />
+                <input type="number" placeholder="Carbs (g)" value={carbs} onChange={(e) => setCarbs(e.target.value)} style={styles.input} />
+                <input type="number" placeholder="Fat (g)" value={fat} onChange={(e) => setFat(e.target.value)} style={styles.input} />
               </div>
-              <button type="submit" style={styles.primaryBtn}>
-                Add Food Entry
-              </button>
+              <button type="submit" style={styles.primaryBtn}>Add Food Entry</button>
             </form>
 
-            {/* LOGGED ENTRIES FEED */}
             {nutritionLogs.map((item) => (
               <div key={item.id} style={styles.logItem}>
                 <div>
@@ -387,50 +384,26 @@ export default function App() {
                     {item.calories} kcal | P: {item.protein}g | C: {item.carbs}g | F: {item.fat}g
                   </div>
                 </div>
-                <button style={styles.cancelBtn} onClick={() => deleteNutritionLog(item.id)}>
-                  ✕
-                </button>
+                <button style={styles.cancelBtn} onClick={() => deleteNutritionLog(item.id)}>✕</button>
               </div>
             ))}
           </div>
         )}
       </main>
 
-      {/* BOTTOM NAVIGATION */}
       <nav style={styles.bottomNav}>
-        <button
-          style={activeTab === 'gym' ? styles.activeNavBtn : styles.navBtn}
-          onClick={() => setActiveTab('gym')}
-        >
-          🏋️ Gym
-        </button>
-        <button
-          style={activeTab === 'nutrition' ? styles.activeNavBtn : styles.navBtn}
-          onClick={() => setActiveTab('nutrition')}
-        >
-          🥗 Nutrition
-        </button>
+        <button style={activeTab === 'gym' ? styles.activeNavBtn : styles.navBtn} onClick={() => setActiveTab('gym')}>🏋️ Gym</button>
+        <button style={activeTab === 'nutrition' ? styles.activeNavBtn : styles.navBtn} onClick={() => setActiveTab('nutrition')}>🥗 Nutrition</button>
       </nav>
     </div>
   );
 }
 
-// Inline Mobile-First Dark Theme Styles
 const styles = {
-  appContainer: {
-    backgroundColor: '#121212',
-    color: '#E0E0E0',
-    minHeight: '100vh',
-    paddingBottom: '80px',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-  },
-  header: {
-    padding: '16px',
-    backgroundColor: '#1E1E1E',
-    borderBottom: '1px solid #2C2C2C',
-    textAlign: 'center',
-  },
+  appContainer: { backgroundColor: '#121212', color: '#E0E0E0', minHeight: '100vh', paddingBottom: '80px', fontFamily: 'sans-serif' },
+  header: { padding: '16px', backgroundColor: '#1E1E1E', borderBottom: '1px solid #2C2C2C' },
   title: { margin: 0, fontSize: '1.2rem', color: '#00E676', letterSpacing: '1px' },
+  logoutBtn: { backgroundColor: '#2A2A2A', color: '#FF5252', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' },
   content: { padding: '16px', maxWidth: '500px', margin: '0 auto' },
   subTabNav: { display: 'flex', gap: '8px', marginBottom: '16px' },
   subTab: { flex: 1, padding: '8px', background: '#1E1E1E', border: 'none', color: '#888', borderRadius: '6px' },
