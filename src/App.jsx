@@ -25,11 +25,19 @@ export default function App() {
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateExercises, setNewTemplateExercises] = useState(['']);
 
-  // Nutrition State
+  // Nutrition & Goals State
   const [nutritionLogs, setNutritionLogs] = useState([]);
   const [mealLibrary, setMealLibrary] = useState([]);
   const [mealSlots, setMealSlots] = useState(['Breakfast', 'Lunch', 'Dinner', 'Snack']);
   const [newSlotName, setNewSlotName] = useState('');
+
+  // Daily Goals
+  const [goals, setGoals] = useState({ target_calories: 2500, target_protein: 150, target_carbs: 300, target_fat: 70 });
+  const [showGoalModal, setShowGoalModal] = useState(false);
+  const [goalCal, setGoalCal] = useState(2500);
+  const [goalPro, setGoalPro] = useState(150);
+  const [goalCarb, setGoalCarb] = useState(300);
+  const [goalFat, setGoalFat] = useState(70);
 
   // Library Form
   const [libName, setLibName] = useState('');
@@ -52,6 +60,7 @@ export default function App() {
       fetchHistory();
       fetchNutrition();
       fetchMealLibrary();
+      fetchGoals();
     }
   }, [session]);
 
@@ -89,6 +98,34 @@ export default function App() {
   const fetchMealLibrary = async () => {
     const { data } = await supabase.from('meal_library').select('*').order('created_at', { ascending: false });
     if (data) setMealLibrary(data);
+  };
+
+  const fetchGoals = async () => {
+    const { data } = await supabase.from('user_goals').select('*').single();
+    if (data) {
+      setGoals(data);
+      setGoalCal(data.target_calories);
+      setGoalPro(data.target_protein);
+      setGoalCarb(data.target_carbs);
+      setGoalFat(data.target_fat);
+    }
+  };
+
+  const handleSaveGoals = async (e) => {
+    e.preventDefault();
+    const updated = {
+      user_id: session.user.id,
+      target_calories: Number(goalCal) || 2000,
+      target_protein: Number(goalPro) || 150,
+      target_carbs: Number(goalCarb) || 200,
+      target_fat: Number(goalFat) || 60,
+    };
+
+    const { error } = await supabase.from('user_goals').upsert(updated);
+    if (!error) {
+      setGoals(updated);
+      setShowGoalModal(false);
+    }
   };
 
   // GYM HANDLERS
@@ -222,11 +259,13 @@ export default function App() {
     setMealSlots(mealSlots.filter((s) => s !== slotToRemove));
   };
 
-  // Totals
+  // Totals & Calculations
   const totalCal = nutritionLogs.reduce((acc, curr) => acc + (curr.calories || 0), 0);
   const totalPro = nutritionLogs.reduce((acc, curr) => acc + (curr.protein || 0), 0);
   const totalCarb = nutritionLogs.reduce((acc, curr) => acc + (curr.carbs || 0), 0);
   const totalFat = nutritionLogs.reduce((acc, curr) => acc + (curr.fat || 0), 0);
+
+  const calRemaining = goals.target_calories - totalCal;
 
   if (!session) {
     return (
@@ -328,7 +367,6 @@ export default function App() {
             {/* WORKOUT HISTORY SUB-TAB */}
             {!activeWorkout && gymSubTab === 'history' && (
               <div>
-                {/* LOG EDITING MODAL */}
                 {editingLog && (
                   <div style={{ ...styles.card, borderColor: '#00E676' }}>
                     <h3 style={{ color: '#00E676' }}>Editing: {editingLog.template_name}</h3>
@@ -393,14 +431,86 @@ export default function App() {
             )}
           </div>
         ) : (
-          /* NUTRITION & MEAL LIBRARY TAB */
+          /* NUTRITION TAB */
           <div>
-            <div style={styles.macroGrid}>
-              <div style={styles.macroCard}><span style={styles.macroVal}>{totalCal}</span><span style={styles.macroLbl}>Calories</span></div>
-              <div style={styles.macroCard}><span style={styles.macroVal}>{totalPro}g</span><span style={styles.macroLbl}>Protein</span></div>
-              <div style={styles.macroCard}><span style={styles.macroVal}>{totalCarb}g</span><span style={styles.macroLbl}>Carbs</span></div>
-              <div style={styles.macroCard}><span style={styles.macroVal}>{totalFat}g</span><span style={styles.macroLbl}>Fat</span></div>
+            {/* LIFESUM-STYLE GOAL HEADER */}
+            <div style={styles.lifesumCard}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ color: '#888', fontSize: '0.8rem', textTransform: 'uppercase' }}>Daily Goal</span>
+                <button style={{ ...styles.secondaryBtn, padding: '4px 8px', fontSize: '0.75rem' }} onClick={() => setShowGoalModal(!showGoalModal)}>
+                  Edit Goals
+                </button>
+              </div>
+
+              <div style={styles.calCircleBox}>
+                <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: calRemaining < 0 ? '#FF5252' : '#00E676' }}>
+                  {calRemaining}
+                </div>
+                <div style={{ color: '#AAA', fontSize: '0.85rem' }}>Calories Remaining</div>
+                <div style={{ color: '#666', fontSize: '0.75rem', marginTop: '4px' }}>
+                  Consumed: {totalCal} / Goal: {goals.target_calories}
+                </div>
+              </div>
+
+              {/* MACRO BARS */}
+              <div style={styles.macroRow}>
+                <div style={styles.macroCol}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
+                    <span>Protein</span>
+                    <span style={{ color: '#00E676' }}>{totalPro}/{goals.target_protein}g</span>
+                  </div>
+                  <div style={styles.progressBarBg}>
+                    <div style={{ ...styles.progressBarFill, width: `${Math.min(100, (totalPro / goals.target_protein) * 100)}%`, backgroundColor: '#00E676' }} />
+                  </div>
+                </div>
+
+                <div style={styles.macroCol}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
+                    <span>Carbs</span>
+                    <span style={{ color: '#2979FF' }}>{totalCarb}/{goals.target_carbs}g</span>
+                  </div>
+                  <div style={styles.progressBarBg}>
+                    <div style={{ ...styles.progressBarFill, width: `${Math.min(100, (totalCarb / goals.target_carbs) * 100)}%`, backgroundColor: '#2979FF' }} />
+                  </div>
+                </div>
+
+                <div style={styles.macroCol}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
+                    <span>Fat</span>
+                    <span style={{ color: '#FFD600' }}>{totalFat}/{goals.target_fat}g</span>
+                  </div>
+                  <div style={styles.progressBarBg}>
+                    <div style={{ ...styles.progressBarFill, width: `${Math.min(100, (totalFat / goals.target_fat) * 100)}%`, backgroundColor: '#FFD600' }} />
+                  </div>
+                </div>
+              </div>
             </div>
+
+            {/* EDIT GOALS MODAL */}
+            {showGoalModal && (
+              <form onSubmit={handleSaveGoals} style={{ ...styles.card, borderColor: '#00E676' }}>
+                <h3>Set Daily Targets</h3>
+                <div style={styles.grid2x2}>
+                  <div>
+                    <label style={styles.label}>Calories</label>
+                    <input type="number" value={goalCal} onChange={(e) => setGoalCal(e.target.value)} style={styles.input} />
+                  </div>
+                  <div>
+                    <label style={styles.label}>Protein (g)</label>
+                    <input type="number" value={goalPro} onChange={(e) => setGoalPro(e.target.value)} style={styles.input} />
+                  </div>
+                  <div>
+                    <label style={styles.label}>Carbs (g)</label>
+                    <input type="number" value={goalCarb} onChange={(e) => setGoalCarb(e.target.value)} style={styles.input} />
+                  </div>
+                  <div>
+                    <label style={styles.label}>Fat (g)</label>
+                    <input type="number" value={goalFat} onChange={(e) => setGoalFat(e.target.value)} style={styles.input} />
+                  </div>
+                </div>
+                <button type="submit" style={styles.primaryBtn}>Save Goals</button>
+              </form>
+            )}
 
             {/* MEAL LIBRARY MANAGEMENT */}
             <div style={styles.card}>
@@ -456,7 +566,6 @@ export default function App() {
                       <button style={{ ...styles.cancelBtn, fontSize: '0.8rem' }} onClick={() => removeSlot(slot)}>Remove Slot</button>
                     </div>
 
-                    {/* Quick Log Selector */}
                     {mealLibrary.length > 0 && (
                       <select
                         onChange={(e) => {
@@ -514,6 +623,13 @@ const styles = {
   subTab: { flex: 1, padding: '8px', background: '#1E1E1E', border: 'none', color: '#888', borderRadius: '6px' },
   activeSubTab: { flex: 1, padding: '8px', background: '#2C2C2C', border: 'none', color: '#00E676', borderRadius: '6px', fontWeight: 'bold' },
   card: { backgroundColor: '#1E1E1E', borderRadius: '12px', padding: '16px', marginBottom: '16px', border: '1px solid #2A2A2A' },
+  lifesumCard: { backgroundColor: '#1C251E', borderRadius: '16px', padding: '16px', marginBottom: '16px', border: '1px solid #00E67644' },
+  calCircleBox: { textAlign: 'center', margin: '16px 0' },
+  macroRow: { display: 'flex', gap: '12px', marginTop: '16px' },
+  macroCol: { flex: 1 },
+  progressBarBg: { backgroundColor: '#121212', height: '6px', borderRadius: '3px', overflow: 'hidden' },
+  progressBarFill: { height: '100%', borderRadius: '3px', transition: 'width 0.3s ease' },
+  label: { fontSize: '0.75rem', color: '#888', display: 'block', marginBottom: '4px' },
   input: { width: '100%', padding: '10px', marginBottom: '10px', backgroundColor: '#2A2A2A', border: '1px solid #333', color: '#FFF', borderRadius: '6px', boxSizing: 'border-box' },
   primaryBtn: { width: '100%', padding: '12px', backgroundColor: '#00E676', color: '#000', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', marginTop: '8px' },
   secondaryBtn: { padding: '8px 12px', backgroundColor: '#2A2A2A', color: '#FFF', border: '1px solid #444', borderRadius: '6px', cursor: 'pointer' },
@@ -523,10 +639,6 @@ const styles = {
   setRow: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' },
   setFormInput: { width: '60px', padding: '6px', backgroundColor: '#1A1A1A', border: '1px solid #444', color: '#FFF', borderRadius: '4px', textAlign: 'center' },
   iconBtn: { background: 'none', border: 'none', color: '#FF5252', cursor: 'pointer', marginLeft: 'auto' },
-  macroGrid: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '16px' },
-  macroCard: { backgroundColor: '#1E1E1E', padding: '12px 4px', borderRadius: '8px', textAlign: 'center', border: '1px solid #2A2A2A' },
-  macroVal: { display: 'block', fontSize: '1rem', fontWeight: 'bold', color: '#00E676' },
-  macroLbl: { fontSize: '0.7rem', color: '#888' },
   grid2x2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
   logItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: '#252525', borderRadius: '6px', marginTop: '8px' },
   bottomNav: { position: 'fixed', bottom: 0, left: 0, right: 0, height: '60px', backgroundColor: '#1E1E1E', borderTop: '1px solid #2C2C2C', display: 'flex', justifyContent: 'space-around', alignItems: 'center' },
