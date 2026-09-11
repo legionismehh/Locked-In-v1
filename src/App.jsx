@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://placeholder.supabase.co';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'placeholder-key';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+const emptySet = () => ({ weight: '', reps: '' });
+const emptyExercise = () => ({ name: '', sets: [emptySet()], previousSets: [] });
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -12,17 +15,12 @@ export default function App() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  const [activeTab, setActiveTab] = useState('gym');
   const [gymSubTab, setGymSubTab] = useState('templates');
-
-  // Gym State
   const [templates, setTemplates] = useState([]);
   const [activeWorkout, setActiveWorkout] = useState(null);
   const [history, setHistory] = useState([]);
   const [editingLog, setEditingLog] = useState(null);
-  
-  // Calendar History State
-  const [calendarView, setCalendarView] = useState('month');
+
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDateLog, setSelectedDateLog] = useState(null);
 
@@ -30,32 +28,9 @@ export default function App() {
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateExercises, setNewTemplateExercises] = useState(['']);
 
-  // Nutrition & Goals State
-  const [nutritionLogs, setNutritionLogs] = useState([]);
-  const [mealLibrary, setMealLibrary] = useState([]);
-  const [mealSlots, setMealSlots] = useState(['Breakfast', 'Lunch', 'Dinner', 'Snack']);
-  const [newSlotName, setNewSlotName] = useState('');
-
-  // Daily Goals
-  const [goals, setGoals] = useState({ target_calories: 2500, target_protein: 150, target_carbs: 300, target_fat: 70 });
-  const [showGoalModal, setShowGoalModal] = useState(false);
-  const [goalCal, setGoalCal] = useState(2500);
-  const [goalPro, setGoalPro] = useState(150);
-  const [goalCarb, setGoalCarb] = useState(300);
-  const [goalFat, setGoalFat] = useState(70);
-
-  // Library Form
-  const [libName, setLibName] = useState('');
-  const [libCal, setLibCal] = useState('');
-  const [libPro, setLibPro] = useState('');
-  const [libCarb, setLibCarb] = useState('');
-  const [libFat, setLibFat] = useState('');
-  const [showAddLib, setShowAddLib] = useState(false);
-
-  // Auth & Init
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setSession(session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
     return () => subscription.unsubscribe();
   }, []);
 
@@ -63,15 +38,13 @@ export default function App() {
     if (session) {
       fetchTemplates();
       fetchHistory();
-      fetchNutrition();
-      fetchMealLibrary();
-      fetchGoals();
     }
   }, [session]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
+
     if (isSignUp) {
       const { error } = await supabase.auth.signUp({ email, password });
       if (error) setAuthError(error.message);
@@ -84,65 +57,94 @@ export default function App() {
 
   const handleLogout = () => supabase.auth.signOut();
 
-  // Data Fetching
   const fetchTemplates = async () => {
-    const { data } = await supabase.from('templates').select('*').order('created_at', { ascending: false });
+    const { data } = await supabase
+      .from('templates')
+      .select('*')
+      .order('created_at', { ascending: false });
+
     if (data) setTemplates(data);
   };
 
   const fetchHistory = async () => {
-    const { data } = await supabase.from('workout_logs').select('*').order('completed_at', { ascending: false });
+    const { data } = await supabase
+      .from('workout_logs')
+      .select('*')
+      .order('completed_at', { ascending: false });
+
     if (data) setHistory(data);
   };
 
-  const fetchNutrition = async () => {
-    const { data } = await supabase.from('nutrition_logs').select('*').order('logged_at', { ascending: false });
-    if (data) setNutritionLogs(data);
-  };
+  const normalizeExerciseName = (name = '') => name.trim().toLowerCase();
 
-  const fetchMealLibrary = async () => {
-    const { data } = await supabase.from('meal_library').select('*').order('created_at', { ascending: false });
-    if (data) setMealLibrary(data);
-  };
+  const findPreviousExercise = (exerciseName) => {
+    const normalized = normalizeExerciseName(exerciseName);
+    if (!normalized) return null;
 
-  const fetchGoals = async () => {
-    const { data } = await supabase.from('user_goals').select('*').single();
-    if (data) {
-      setGoals(data);
-      setGoalCal(data.target_calories);
-      setGoalPro(data.target_protein);
-      setGoalCarb(data.target_carbs);
-      setGoalFat(data.target_fat);
+    // history is already sorted newest -> oldest, so the first match is the latest performance.
+    for (const log of history) {
+      const match = log.exercises?.find(
+        (exercise) => normalizeExerciseName(exercise.name) === normalized
+      );
+
+      if (match) {
+        return {
+          sets: match.sets || [],
+          completedAt: log.completed_at,
+          workoutName: log.template_name,
+        };
+      }
     }
+
+    return null;
   };
 
-  const handleSaveGoals = async (e) => {
-    e.preventDefault();
-    const updated = {
-      user_id: session.user.id,
-      target_calories: Number(goalCal) || 2000,
-      target_protein: Number(goalPro) || 150,
-      target_carbs: Number(goalCarb) || 200,
-      target_fat: Number(goalFat) || 60,
+  const buildExerciseFromHistory = (exercise) => {
+    const previous = findPreviousExercise(exercise.name);
+
+    if (previous?.sets?.length) {
+      return {
+        ...exercise,
+        sets: previous.sets.map((set) => ({
+          weight: set.weight ?? '',
+          reps: set.reps ?? '',
+        })),
+        previousSets: previous.sets.map((set) => ({
+          weight: set.weight ?? '',
+          reps: set.reps ?? '',
+        })),
+        previousCompletedAt: previous.completedAt,
+        previousWorkoutName: previous.workoutName,
+      };
+    }
+
+    const templateSetCount = exercise.sets?.length || 1;
+    return {
+      ...exercise,
+      sets: Array.from({ length: templateSetCount }, emptySet),
+      previousSets: [],
     };
-
-    const { error } = await supabase.from('user_goals').upsert(updated);
-    if (!error) {
-      setGoals(updated);
-      setShowGoalModal(false);
-    }
   };
 
-  // GYM HANDLERS
   const handleSaveTemplate = async () => {
     if (!newTemplateName.trim()) return;
+
     const exercisesList = newTemplateExercises
-      .filter((e) => e.trim() !== '')
-      .map((name) => ({ name, sets: [{ reps: 10, weight: 135 }] }));
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map((name) => ({ name, sets: [emptySet()] }));
+
+    if (exercisesList.length === 0) return;
 
     const { data, error } = await supabase
       .from('templates')
-      .insert([{ name: newTemplateName, exercises: exercisesList, user_id: session.user.id }])
+      .insert([
+        {
+          name: newTemplateName.trim(),
+          exercises: exercisesList,
+          user_id: session.user.id,
+        },
+      ])
       .select();
 
     if (!error && data) {
@@ -153,48 +155,156 @@ export default function App() {
     }
   };
 
-  const startWorkout = (template) => setActiveWorkout(JSON.parse(JSON.stringify(template)));
+  const startWorkout = (template) => {
+    const workout = JSON.parse(JSON.stringify(template));
+    workout.exercises = (workout.exercises || []).map(buildExerciseFromHistory);
+    setActiveWorkout(workout);
+  };
+
+  const startBlankWorkout = () => {
+    setActiveWorkout({
+      name: 'Freestyle Workout',
+      isFreestyle: true,
+      exercises: [emptyExercise()],
+    });
+  };
+
+  const updateWorkoutName = (value) => {
+    setActiveWorkout((current) => ({ ...current, name: value }));
+  };
+
+  const updateExerciseName = (exIndex, value) => {
+    setActiveWorkout((current) => {
+      const updated = JSON.parse(JSON.stringify(current));
+      updated.exercises[exIndex].name = value;
+
+      const previous = findPreviousExercise(value);
+      if (previous?.sets?.length) {
+        updated.exercises[exIndex].previousSets = previous.sets.map((set) => ({
+          weight: set.weight ?? '',
+          reps: set.reps ?? '',
+        }));
+        updated.exercises[exIndex].previousCompletedAt = previous.completedAt;
+        updated.exercises[exIndex].previousWorkoutName = previous.workoutName;
+      } else {
+        updated.exercises[exIndex].previousSets = [];
+        delete updated.exercises[exIndex].previousCompletedAt;
+        delete updated.exercises[exIndex].previousWorkoutName;
+      }
+
+      return updated;
+    });
+  };
+
+  const usePreviousForExercise = (exIndex) => {
+    setActiveWorkout((current) => {
+      const updated = JSON.parse(JSON.stringify(current));
+      const exercise = updated.exercises[exIndex];
+
+      if (!exercise.previousSets?.length) return current;
+
+      exercise.sets = exercise.previousSets.map((set) => ({
+        weight: set.weight ?? '',
+        reps: set.reps ?? '',
+      }));
+      return updated;
+    });
+  };
 
   const updateSet = (exIndex, setIndex, field, value) => {
-    const updated = { ...activeWorkout };
-    updated.exercises[exIndex].sets[setIndex][field] = Number(value);
-    setActiveWorkout(updated);
+    setActiveWorkout((current) => {
+      const updated = JSON.parse(JSON.stringify(current));
+      updated.exercises[exIndex].sets[setIndex][field] = value === '' ? '' : Number(value);
+      return updated;
+    });
   };
 
   const addSet = (exIndex) => {
-    const updated = { ...activeWorkout };
-    const lastSet = updated.exercises[exIndex].sets.slice(-1)[0] || { reps: 10, weight: 100 };
-    updated.exercises[exIndex].sets.push({ ...lastSet });
-    setActiveWorkout(updated);
+    setActiveWorkout((current) => {
+      const updated = JSON.parse(JSON.stringify(current));
+      updated.exercises[exIndex].sets.push(emptySet());
+      return updated;
+    });
   };
 
   const removeSet = (exIndex, setIndex) => {
-    const updated = { ...activeWorkout };
-    updated.exercises[exIndex].sets.splice(setIndex, 1);
-    setActiveWorkout(updated);
+    setActiveWorkout((current) => {
+      const updated = JSON.parse(JSON.stringify(current));
+      updated.exercises[exIndex].sets.splice(setIndex, 1);
+
+      if (updated.exercises[exIndex].sets.length === 0) {
+        updated.exercises[exIndex].sets.push(emptySet());
+      }
+
+      return updated;
+    });
+  };
+
+  const addExercise = () => {
+    setActiveWorkout((current) => ({
+      ...current,
+      exercises: [...current.exercises, emptyExercise()],
+    }));
+  };
+
+  const removeExercise = (exIndex) => {
+    setActiveWorkout((current) => {
+      const updated = JSON.parse(JSON.stringify(current));
+      updated.exercises.splice(exIndex, 1);
+      return updated;
+    });
   };
 
   const moveExercise = (index, direction) => {
-    if (!activeWorkout) return;
-    const updated = { ...activeWorkout };
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= updated.exercises.length) return;
-    
-    const temp = updated.exercises[index];
-    updated.exercises[index] = updated.exercises[targetIndex];
-    updated.exercises[targetIndex] = temp;
-    setActiveWorkout(updated);
+    setActiveWorkout((current) => {
+      if (!current) return current;
+
+      const updated = JSON.parse(JSON.stringify(current));
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= updated.exercises.length) return current;
+
+      [updated.exercises[index], updated.exercises[targetIndex]] = [
+        updated.exercises[targetIndex],
+        updated.exercises[index],
+      ];
+
+      return updated;
+    });
   };
 
   const finishWorkout = async () => {
     if (!activeWorkout) return;
+
+    const cleanedExercises = activeWorkout.exercises
+      .filter((exercise) => exercise.name.trim())
+      .map((exercise) => ({
+        name: exercise.name.trim(),
+        sets: exercise.sets.map((set, setIndex) => ({
+          set_number: setIndex + 1,
+          weight: set.weight === '' ? 0 : Number(set.weight),
+          reps: set.reps === '' ? 0 : Number(set.reps),
+        })),
+      }));
+
+    if (cleanedExercises.length === 0) {
+      alert('Add at least one exercise before finishing your workout.');
+      return;
+    }
+
+    const workoutName = activeWorkout.name?.trim() || 'Freestyle Workout';
+
     const { error } = await supabase.from('workout_logs').insert([
-      { template_name: activeWorkout.name, exercises: activeWorkout.exercises, user_id: session.user.id },
+      {
+        template_name: workoutName,
+        exercises: cleanedExercises,
+        user_id: session.user.id,
+      },
     ]);
 
     if (!error) {
       setActiveWorkout(null);
-      fetchHistory();
+      setSelectedDateLog(null);
+      await fetchHistory();
       setGymSubTab('history');
     }
   };
@@ -202,11 +312,15 @@ export default function App() {
   const deleteWorkoutLog = async (id) => {
     if (!window.confirm('Delete this workout log?')) return;
     const { error } = await supabase.from('workout_logs').delete().eq('id', id);
-    if (!error) setHistory(history.filter((item) => item.id !== id));
+    if (!error) {
+      setHistory(history.filter((item) => item.id !== id));
+      if (selectedDateLog?.id === id) setSelectedDateLog(null);
+    }
   };
 
   const handleUpdateLog = async () => {
     if (!editingLog) return;
+
     const { error } = await supabase
       .from('workout_logs')
       .update({ exercises: editingLog.exercises })
@@ -218,87 +332,43 @@ export default function App() {
     }
   };
 
-  // Calendar Helpers
   const getDaysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
   const getFirstDayOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
-
-  // NUTRITION & MEAL LIBRARY HANDLERS
-  const handleSaveToLibrary = async (e) => {
-    e.preventDefault();
-    if (!libName) return;
-
-    const meal = {
-      name: libName,
-      calories: Number(libCal) || 0,
-      protein: Number(libPro) || 0,
-      carbs: Number(libCarb) || 0,
-      fat: Number(libFat) || 0,
-      user_id: session.user.id,
-    };
-
-    const { data, error } = await supabase.from('meal_library').insert([meal]).select();
-    if (!error && data) {
-      setMealLibrary([data[0], ...mealLibrary]);
-      setLibName(''); setLibCal(''); setLibPro(''); setLibCarb(''); setLibFat('');
-      setShowAddLib(false);
-    }
-  };
-
-  const deleteLibraryMeal = async (id) => {
-    const { error } = await supabase.from('meal_library').delete().eq('id', id);
-    if (!error) setMealLibrary(mealLibrary.filter((item) => item.id !== id));
-  };
-
-  const logMealFromLibrary = async (slotName, libraryMeal) => {
-    const log = {
-      food_name: libraryMeal.name,
-      calories: libraryMeal.calories,
-      protein: libraryMeal.protein,
-      carbs: libraryMeal.carbs,
-      fat: libraryMeal.fat,
-      slot_name: slotName,
-      user_id: session.user.id,
-    };
-
-    const { data, error } = await supabase.from('nutrition_logs').insert([log]).select();
-    if (!error && data) setNutritionLogs([data[0], ...nutritionLogs]);
-  };
-
-  const deleteNutritionLog = async (id) => {
-    const { error } = await supabase.from('nutrition_logs').delete().eq('id', id);
-    if (!error) setNutritionLogs(nutritionLogs.filter((item) => item.id !== id));
-  };
-
-  const handleAddSlot = () => {
-    if (newSlotName.trim() && !mealSlots.includes(newSlotName.trim())) {
-      setMealSlots([...mealSlots, newSlotName.trim()]);
-      setNewSlotName('');
-    }
-  };
-
-  const removeSlot = (slotToRemove) => {
-    setMealSlots(mealSlots.filter((s) => s !== slotToRemove));
-  };
-
-  // Totals & Calculations
-  const totalCal = nutritionLogs.reduce((acc, curr) => acc + (curr.calories || 0), 0);
-  const totalPro = nutritionLogs.reduce((acc, curr) => acc + (curr.protein || 0), 0);
-  const totalCarb = nutritionLogs.reduce((acc, curr) => acc + (curr.carbs || 0), 0);
-  const totalFat = nutritionLogs.reduce((acc, curr) => acc + (curr.fat || 0), 0);
-  const calRemaining = goals.target_calories - totalCal;
 
   if (!session) {
     return (
       <div style={styles.appContainer}>
-        <header style={styles.header}><h1 style={styles.title}>LOCKED IN</h1></header>
+        <header style={styles.header}>
+          <h1 style={styles.title}>LOCKED IN</h1>
+        </header>
+
         <main style={styles.content}>
           <form onSubmit={handleAuth} style={styles.card}>
             <h3>{isSignUp ? 'Create Account' : 'Welcome Back'}</h3>
             {authError && <p style={{ color: '#FF5252', fontSize: '0.85rem' }}>{authError}</p>}
-            <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} style={styles.input} required />
-            <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} style={styles.input} required />
-            <button type="submit" style={styles.primaryBtn}>{isSignUp ? 'Sign Up' : 'Log In'}</button>
-            <p style={{ color: '#00E676', textAlign: 'center', cursor: 'pointer', marginTop: '12px', fontSize: '0.9rem' }} onClick={() => setIsSignUp(!isSignUp)}>
+            <input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={styles.input}
+              required
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={styles.input}
+              required
+            />
+            <button type="submit" style={styles.primaryBtn}>
+              {isSignUp ? 'Sign Up' : 'Log In'}
+            </button>
+            <p
+              style={{ color: '#00E676', textAlign: 'center', cursor: 'pointer', marginTop: '12px', fontSize: '0.9rem' }}
+              onClick={() => setIsSignUp(!isSignUp)}
+            >
               {isSignUp ? 'Already have an account? Log In' : "Don't have an account? Sign Up"}
             </p>
           </form>
@@ -310,434 +380,653 @@ export default function App() {
   return (
     <div style={styles.appContainer}>
       <header style={{ ...styles.header, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={styles.title}>LOCKED IN</h1>
+        <div>
+          <h1 style={styles.title}>LOCKED IN</h1>
+          <div style={styles.headerSubtitle}>Workout Tracker</div>
+        </div>
         <button style={styles.logoutBtn} onClick={handleLogout}>Log Out</button>
       </header>
 
       <main style={styles.content}>
-        {activeTab === 'gym' ? (
+        {!activeWorkout && (
+          <div style={styles.subTabNav}>
+            <button
+              style={gymSubTab === 'templates' ? styles.activeSubTab : styles.subTab}
+              onClick={() => setGymSubTab('templates')}
+            >
+              Workouts
+            </button>
+            <button
+              style={gymSubTab === 'history' ? styles.activeSubTab : styles.subTab}
+              onClick={() => setGymSubTab('history')}
+            >
+              History
+            </button>
+          </div>
+        )}
+
+        {activeWorkout ? (
           <div>
-            {!activeWorkout && (
-              <div style={styles.subTabNav}>
-                <button style={gymSubTab === 'templates' ? styles.activeSubTab : styles.subTab} onClick={() => setGymSubTab('templates')}>Templates</button>
-                <button style={gymSubTab === 'history' ? styles.activeSubTab : styles.subTab} onClick={() => setGymSubTab('history')}>History</button>
+            <div style={styles.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={styles.eyebrow}>ACTIVE WORKOUT</div>
+                  <input
+                    type="text"
+                    value={activeWorkout.name || ''}
+                    onChange={(e) => updateWorkoutName(e.target.value)}
+                    style={styles.workoutTitleInput}
+                    aria-label="Workout name"
+                  />
+                </div>
+                <button style={styles.cancelBtn} onClick={() => setActiveWorkout(null)}>Cancel</button>
               </div>
-            )}
 
-            {/* ACTIVE WORKOUT MODE */}
-            {activeWorkout ? (
-              <div style={styles.card}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h2 style={{ color: '#00E676', margin: 0 }}>Active: {activeWorkout.name}</h2>
-                  <button style={styles.cancelBtn} onClick={() => setActiveWorkout(null)}>Cancel</button>
-                </div>
+              <p style={styles.mutedText}>
+                Your changes only affect this workout. Saved templates stay unchanged.
+              </p>
+            </div>
 
-                {activeWorkout.exercises.map((ex, exIdx) => (
-                  <div key={exIdx} style={styles.exerciseBox}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                      <input 
-                        type="text" 
-                        value={ex.name} 
-                        onChange={(e) => {
-                          const updated = { ...activeWorkout };
-                          updated.exercises[exIdx].name = e.target.value;
-                          setActiveWorkout(updated);
-                        }} 
-                        style={{...styles.input, marginBottom: 0, border: 'none', padding: '0', fontSize: '1.1rem', fontWeight: 'bold'}} 
-                      />
-                      <div style={{ display: 'flex', gap: '4px' }}>
-                        <button style={styles.iconBtn} onClick={() => moveExercise(exIdx, 'up')} disabled={exIdx === 0}>▲</button>
-                        <button style={styles.iconBtn} onClick={() => moveExercise(exIdx, 'down')} disabled={exIdx === activeWorkout.exercises.length - 1}>▼</button>
-                      </div>
-                    </div>
+            {activeWorkout.exercises.map((exercise, exIdx) => (
+              <div key={exIdx} style={styles.exerciseBox}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={exercise.name}
+                    placeholder="Exercise name"
+                    onChange={(e) => updateExerciseName(exIdx, e.target.value)}
+                    style={styles.exerciseNameInput}
+                  />
 
-                    {ex.sets.map((set, sIdx) => (
-                      <div key={sIdx} style={styles.setRow}>
-                        <span style={{ color: '#888', width: '20px' }}>#{sIdx + 1}</span>
-                        <input type="number" placeholder="Lbs" value={set.weight} onChange={(e) => updateSet(exIdx, sIdx, 'weight', e.target.value)} style={styles.setFormInput} />
-                        <span style={{ color: '#888' }}>lbs x</span>
-                        <input type="number" placeholder="Reps" value={set.reps} onChange={(e) => updateSet(exIdx, sIdx, 'reps', e.target.value)} style={styles.setFormInput} />
-                        <span style={{ color: '#888' }}>reps</span>
-                        <button style={styles.iconBtn} onClick={() => removeSet(exIdx, sIdx)}>✕</button>
-                      </div>
-                    ))}
-                    <button style={styles.secondaryBtn} onClick={() => addSet(exIdx)}>+ Add Set</button>
-                  </div>
-                ))}
-
-                <button style={styles.primaryBtn} onClick={finishWorkout}>Finish & Save Workout</button>
-              </div>
-            ) : (
-              gymSubTab === 'templates' && (
-                <div>
-                  {!showNewTemplate ? (
-                    <button style={styles.primaryBtn} onClick={() => setShowNewTemplate(true)}>+ Create New Template</button>
-                  ) : (
-                    <div style={styles.card}>
-                      <h3>New Template</h3>
-                      <input type="text" placeholder="Template Name" value={newTemplateName} onChange={(e) => setNewTemplateName(e.target.value)} style={styles.input} />
-                      <h4>Exercises</h4>
-                      {newTemplateExercises.map((ex, idx) => (
-                        <input key={idx} type="text" placeholder={`Exercise ${idx + 1}`} value={ex} onChange={(e) => {
-                          const updated = [...newTemplateExercises]; updated[idx] = e.target.value; setNewTemplateExercises(updated);
-                        }} style={{ ...styles.input, marginBottom: '8px' }} />
-                      ))}
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <button style={styles.secondaryBtn} onClick={() => setNewTemplateExercises([...newTemplateExercises, ''])}>+ Add Exercise</button>
-                        <button style={styles.primaryBtn} onClick={handleSaveTemplate}>Save Template</button>
-                      </div>
-                    </div>
-                  )}
-
-                  {templates.map((tpl) => (
-                    <div key={tpl.id} style={styles.card}>
-                      <h3 style={{ margin: '0 0 8px 0' }}>{tpl.name}</h3>
-                      <p style={{ color: '#AAA', fontSize: '0.9rem', marginBottom: '12px' }}>{tpl.exercises ? tpl.exercises.map((e) => e.name).join(', ') : 'No exercises'}</p>
-                      <button style={styles.startBtn} onClick={() => startWorkout(tpl)}>Start Workout</button>
-                    </div>
-                  ))}
-                </div>
-              )
-            )}
-
-            {/* WORKOUT HISTORY SUB-TAB WITH CALENDAR */}
-            {!activeWorkout && gymSubTab === 'history' && (
-              <div>
-                {/* CALENDAR COMPONENT */}
-                <div style={styles.card}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                    <h3 style={{ margin: 0, fontSize: '1rem' }}>
-                      📅 {currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
-                    </h3>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button style={styles.secondaryBtn} onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))}>◀</button>
-                      <button style={styles.secondaryBtn} onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))}>▶</button>
-                    </div>
-                  </div>
-                  
-                  <div style={styles.calendarGrid}>
-                    {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
-                      <div key={i} style={{ textAlign: 'center', color: '#888', fontSize: '0.8rem', fontWeight: 'bold' }}>{day}</div>
-                    ))}
-                    
-                    {Array.from({ length: getFirstDayOfMonth(currentDate) }).map((_, i) => (
-                      <div key={`empty-${i}`} />
-                    ))}
-                    
-                    {Array.from({ length: getDaysInMonth(currentDate) }).map((_, i) => {
-                      const dayNum = i + 1;
-                      const formattedDay = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-                      const logsForDay = history.filter(log => log.completed_at && log.completed_at.startsWith(formattedDay));
-                      const hasWorkout = logsForDay.length > 0;
-                      
-                      return (
-                        <button
-                          key={dayNum}
-                          onClick={() => hasWorkout && setSelectedDateLog(logsForDay[0])}
-                          style={{
-                            ...styles.calendarDay,
-                            backgroundColor: hasWorkout ? '#00E67620' : 'transparent',
-                            border: hasWorkout ? '1px solid #00E676' : '1px solid transparent',
-                            color: hasWorkout ? '#00E676' : '#AAA',
-                            cursor: hasWorkout ? 'pointer' : 'default'
-                          }}
-                        >
-                          {dayNum}
-                        </button>
-                      );
-                    })}
+                  <div style={{ display: 'flex', gap: '2px', flexShrink: 0 }}>
+                    <button style={styles.iconBtn} onClick={() => moveExercise(exIdx, 'up')} disabled={exIdx === 0}>▲</button>
+                    <button
+                      style={styles.iconBtn}
+                      onClick={() => moveExercise(exIdx, 'down')}
+                      disabled={exIdx === activeWorkout.exercises.length - 1}
+                    >
+                      ▼
+                    </button>
+                    <button style={styles.removeExerciseBtn} onClick={() => removeExercise(exIdx)}>✕</button>
                   </div>
                 </div>
 
-                {/* EDITING LOG OVERLAY */}
-                {editingLog && (
-                  <div style={{ ...styles.card, borderColor: '#00E676' }}>
-                    <h3 style={{ color: '#00E676' }}>Editing: {editingLog.template_name}</h3>
-                    {editingLog.exercises.map((ex, exIdx) => (
-                      <div key={exIdx} style={styles.exerciseBox}>
-                        <h4 style={{ margin: '0 0 8px 0', color: '#FFF' }}>{ex.name}</h4>
-                        {ex.sets.map((set, sIdx) => (
-                          <div key={sIdx} style={styles.setRow}>
-                            <span style={{ color: '#888' }}>#{sIdx + 1}</span>
-                            <input
-                              type="number"
-                              value={set.weight}
-                              onChange={(e) => {
-                                const updated = { ...editingLog };
-                                updated.exercises[exIdx].sets[sIdx].weight = Number(e.target.value);
-                                setEditingLog(updated);
-                              }}
-                              style={styles.setFormInput}
-                            />
-                            <span style={{ color: '#888' }}>lbs</span>
-                            <input
-                              type="number"
-                              value={set.reps}
-                              onChange={(e) => {
-                                const updated = { ...editingLog };
-                                updated.exercises[exIdx].sets[sIdx].reps = Number(e.target.value);
-                                setEditingLog(updated);
-                              }}
-                              style={styles.setFormInput}
-                            />
-                            <span style={{ color: '#888' }}>reps</span>
-                          </div>
-                        ))}
-                      </div>
-                    ))}
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button style={styles.primaryBtn} onClick={handleUpdateLog}>Save Changes</button>
-                      <button style={{ ...styles.secondaryBtn, width: '100%', marginTop: '8px' }} onClick={() => setEditingLog(null)}>Cancel</button>
+                {exercise.previousSets?.length > 0 && (
+                  <div style={styles.previousSummary}>
+                    <div>
+                      <strong>Last time</strong>
+                      {exercise.previousCompletedAt && (
+                        <span style={styles.previousMeta}>
+                          {' '}• {new Date(exercise.previousCompletedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </span>
+                      )}
                     </div>
+                    <button style={styles.smallBtn} onClick={() => usePreviousForExercise(exIdx)}>
+                      Use last sets
+                    </button>
                   </div>
                 )}
 
-                {/* LOG DISPLAY (Selected Date or All) */}
-                {(selectedDateLog ? [selectedDateLog] : history).map((log) => (
-                  <div key={log.id} style={styles.card}>
-                    {selectedDateLog && (
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '-20px' }}>
-                        <button style={styles.cancelBtn} onClick={() => setSelectedDateLog(null)}>✕</button>
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', alignItems: 'center', marginTop: selectedDateLog ? '10px' : '0' }}>
-                      <strong style={{ color: '#00E676', fontSize: '1.2rem' }}>{log.template_name}</strong>
-                      <div>
-                        <button style={{ ...styles.secondaryBtn, padding: '2px 8px', fontSize: '0.75rem', marginRight: '6px' }} onClick={() => setEditingLog(JSON.parse(JSON.stringify(log)))}>Edit</button>
-                        <button style={{ ...styles.cancelBtn, fontSize: '0.85rem' }} onClick={() => deleteWorkoutLog(log.id)}>✕</button>
-                      </div>
+                <div style={styles.setHeaderRow}>
+                  <span>SET</span>
+                  <span>LAST</span>
+                  <span>LBS</span>
+                  <span>REPS</span>
+                  <span />
+                </div>
+
+                {exercise.sets.map((set, setIdx) => {
+                  const previousSet = exercise.previousSets?.[setIdx];
+
+                  return (
+                    <div key={setIdx} style={styles.setGridRow}>
+                      <span style={styles.setNumber}>{setIdx + 1}</span>
+                      <span style={styles.previousSetValue}>
+                        {previousSet ? `${previousSet.weight ?? '-'} × ${previousSet.reps ?? '-'}` : '—'}
+                      </span>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        placeholder="lbs"
+                        value={set.weight}
+                        onChange={(e) => updateSet(exIdx, setIdx, 'weight', e.target.value)}
+                        style={styles.setFormInput}
+                      />
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        placeholder="reps"
+                        value={set.reps}
+                        onChange={(e) => updateSet(exIdx, setIdx, 'reps', e.target.value)}
+                        style={styles.setFormInput}
+                      />
+                      <button style={styles.iconBtn} onClick={() => removeSet(exIdx, setIdx)}>✕</button>
                     </div>
-                    <span style={{ color: '#666', fontSize: '0.75rem', display: 'block', marginBottom: '16px' }}>
-                      {new Date(log.completed_at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
-                    </span>
-                    
-                    {log.exercises?.map((ex, idx) => (
-                      <div key={idx} style={{ marginBottom: '12px' }}>
-                        <div style={{ fontSize: '0.95rem', color: '#FFF', fontWeight: 'bold', marginBottom: '4px' }}>{ex.name}</div>
-                        <div style={{ backgroundColor: '#181818', padding: '8px', borderRadius: '6px' }}>
-                          {ex.sets?.map((s, sIdx) => (
-                            <div key={sIdx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', padding: '2px 0', borderBottom: sIdx !== ex.sets.length - 1 ? '1px solid #252525' : 'none' }}>
-                              <span style={{ color: '#888' }}>Set {s.set_number || sIdx + 1}</span>
-                              <span style={{ color: '#DDD', fontWeight: 'bold' }}>{s.weight} lbs × {s.reps} reps</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
+                  );
+                })}
+
+                <button style={styles.secondaryBtnFull} onClick={() => addSet(exIdx)}>+ Add Set</button>
+              </div>
+            ))}
+
+            <button style={styles.addExerciseBtn} onClick={addExercise}>+ Add Exercise</button>
+            <button style={styles.primaryBtn} onClick={finishWorkout}>Finish & Save Workout</button>
+          </div>
+        ) : gymSubTab === 'templates' ? (
+          <div>
+            <div style={styles.startActions}>
+              <button style={styles.freestyleBtn} onClick={startBlankWorkout}>
+                <span style={{ fontSize: '1.2rem' }}>＋</span>
+                <span>
+                  <strong>Start Empty Workout</strong>
+                  <small style={styles.buttonSubtext}>Build it as you go</small>
+                </span>
+              </button>
+
+              <button style={styles.secondaryBtnFull} onClick={() => setShowNewTemplate(!showNewTemplate)}>
+                {showNewTemplate ? 'Close Template Builder' : '+ Create New Template'}
+              </button>
+            </div>
+
+            {showNewTemplate && (
+              <div style={styles.card}>
+                <h3 style={{ marginTop: 0 }}>New Template</h3>
+                <input
+                  type="text"
+                  placeholder="Template Name"
+                  value={newTemplateName}
+                  onChange={(e) => setNewTemplateName(e.target.value)}
+                  style={styles.input}
+                />
+
+                <h4>Exercises</h4>
+                {newTemplateExercises.map((exercise, idx) => (
+                  <div key={idx} style={{ display: 'flex', gap: '8px' }}>
+                    <input
+                      type="text"
+                      placeholder={`Exercise ${idx + 1}`}
+                      value={exercise}
+                      onChange={(e) => {
+                        const updated = [...newTemplateExercises];
+                        updated[idx] = e.target.value;
+                        setNewTemplateExercises(updated);
+                      }}
+                      style={{ ...styles.input, marginBottom: '8px' }}
+                    />
+                    {newTemplateExercises.length > 1 && (
+                      <button
+                        style={{ ...styles.cancelBtn, marginBottom: '8px' }}
+                        onClick={() => setNewTemplateExercises(newTemplateExercises.filter((_, i) => i !== idx))}
+                        type="button"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 ))}
+
+                <button
+                  style={styles.secondaryBtnFull}
+                  onClick={() => setNewTemplateExercises([...newTemplateExercises, ''])}
+                >
+                  + Add Exercise
+                </button>
+                <button style={styles.primaryBtn} onClick={handleSaveTemplate}>Save Template</button>
               </div>
+            )}
+
+            <h3 style={{ margin: '20px 0 10px' }}>Saved Templates</h3>
+            {templates.length === 0 ? (
+              <div style={styles.emptyState}>
+                No templates yet. Start an empty workout or create your first template.
+              </div>
+            ) : (
+              templates.map((template) => (
+                <div key={template.id} style={styles.card}>
+                  <h3 style={{ margin: '0 0 8px' }}>{template.name}</h3>
+                  <p style={styles.mutedText}>
+                    {template.exercises?.length
+                      ? template.exercises.map((exercise) => exercise.name).join(', ')
+                      : 'No exercises'}
+                  </p>
+                  <button style={styles.startBtn} onClick={() => startWorkout(template)}>
+                    Start Workout
+                  </button>
+                </div>
+              ))
             )}
           </div>
         ) : (
-          /* NUTRITION TAB (Unchanged) */
           <div>
-            <div style={styles.lifesumCard}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: '#888', fontSize: '0.8rem', textTransform: 'uppercase' }}>Daily Goal</span>
-                <button style={{ ...styles.secondaryBtn, padding: '4px 8px', fontSize: '0.75rem' }} onClick={() => setShowGoalModal(!showGoalModal)}>
-                  Edit Goals
-                </button>
+            <div style={styles.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>
+                  📅 {currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
+                </h3>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    style={styles.secondaryBtn}
+                    onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))}
+                  >
+                    ◀
+                  </button>
+                  <button
+                    style={styles.secondaryBtn}
+                    onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))}
+                  >
+                    ▶
+                  </button>
+                </div>
               </div>
 
-              <div style={styles.calCircleBox}>
-                <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: calRemaining < 0 ? '#FF5252' : '#00E676' }}>
-                  {calRemaining}
-                </div>
-                <div style={{ color: '#AAA', fontSize: '0.85rem' }}>Calories Remaining</div>
-                <div style={{ color: '#666', fontSize: '0.75rem', marginTop: '4px' }}>
-                  Consumed: {totalCal} / Goal: {goals.target_calories}
-                </div>
-              </div>
+              <div style={styles.calendarGrid}>
+                {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
+                  <div key={i} style={{ textAlign: 'center', color: '#888', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                    {day}
+                  </div>
+                ))}
 
-              <div style={styles.macroRow}>
-                <div style={styles.macroCol}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
-                    <span>Protein</span>
-                    <span style={{ color: '#00E676' }}>{totalPro}/{goals.target_protein}g</span>
-                  </div>
-                  <div style={styles.progressBarBg}>
-                    <div style={{ ...styles.progressBarFill, width: `${Math.min(100, (totalPro / goals.target_protein) * 100)}%`, backgroundColor: '#00E676' }} />
-                  </div>
-                </div>
+                {Array.from({ length: getFirstDayOfMonth(currentDate) }).map((_, i) => (
+                  <div key={`empty-${i}`} />
+                ))}
 
-                <div style={styles.macroCol}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
-                    <span>Carbs</span>
-                    <span style={{ color: '#2979FF' }}>{totalCarb}/{goals.target_carbs}g</span>
-                  </div>
-                  <div style={styles.progressBarBg}>
-                    <div style={{ ...styles.progressBarFill, width: `${Math.min(100, (totalCarb / goals.target_carbs) * 100)}%`, backgroundColor: '#2979FF' }} />
-                  </div>
-                </div>
+                {Array.from({ length: getDaysInMonth(currentDate) }).map((_, i) => {
+                  const dayNum = i + 1;
+                  const formattedDay = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+                  const logsForDay = history.filter(
+                    (log) => log.completed_at && log.completed_at.startsWith(formattedDay)
+                  );
+                  const hasWorkout = logsForDay.length > 0;
 
-                <div style={styles.macroCol}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
-                    <span>Fat</span>
-                    <span style={{ color: '#FFD600' }}>{totalFat}/{goals.target_fat}g</span>
-                  </div>
-                  <div style={styles.progressBarBg}>
-                    <div style={{ ...styles.progressBarFill, width: `${Math.min(100, (totalFat / goals.target_fat) * 100)}%`, backgroundColor: '#FFD600' }} />
-                  </div>
-                </div>
+                  return (
+                    <button
+                      key={dayNum}
+                      onClick={() => hasWorkout && setSelectedDateLog(logsForDay[0])}
+                      style={{
+                        ...styles.calendarDay,
+                        backgroundColor: hasWorkout ? '#00E67620' : 'transparent',
+                        border: hasWorkout ? '1px solid #00E676' : '1px solid transparent',
+                        color: hasWorkout ? '#00E676' : '#AAA',
+                        cursor: hasWorkout ? 'pointer' : 'default',
+                      }}
+                    >
+                      {dayNum}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            {showGoalModal && (
-              <form onSubmit={handleSaveGoals} style={{ ...styles.card, borderColor: '#00E676' }}>
-                <h3>Set Daily Targets</h3>
-                <div style={styles.grid2x2}>
-                  <div>
-                    <label style={styles.label}>Calories</label>
-                    <input type="number" value={goalCal} onChange={(e) => setGoalCal(e.target.value)} style={styles.input} />
+            {editingLog && (
+              <div style={{ ...styles.card, borderColor: '#00E676' }}>
+                <h3 style={{ color: '#00E676' }}>Editing: {editingLog.template_name}</h3>
+                {editingLog.exercises.map((exercise, exIdx) => (
+                  <div key={exIdx} style={styles.exerciseBox}>
+                    <h4 style={{ margin: '0 0 8px', color: '#FFF' }}>{exercise.name}</h4>
+                    {exercise.sets.map((set, setIdx) => (
+                      <div key={setIdx} style={styles.editSetRow}>
+                        <span style={{ color: '#888' }}>#{setIdx + 1}</span>
+                        <input
+                          type="number"
+                          value={set.weight}
+                          onChange={(e) => {
+                            const updated = JSON.parse(JSON.stringify(editingLog));
+                            updated.exercises[exIdx].sets[setIdx].weight = Number(e.target.value);
+                            setEditingLog(updated);
+                          }}
+                          style={styles.setFormInput}
+                        />
+                        <span style={{ color: '#888' }}>lbs</span>
+                        <input
+                          type="number"
+                          value={set.reps}
+                          onChange={(e) => {
+                            const updated = JSON.parse(JSON.stringify(editingLog));
+                            updated.exercises[exIdx].sets[setIdx].reps = Number(e.target.value);
+                            setEditingLog(updated);
+                          }}
+                          style={styles.setFormInput}
+                        />
+                        <span style={{ color: '#888' }}>reps</span>
+                      </div>
+                    ))}
                   </div>
-                  <div>
-                    <label style={styles.label}>Protein (g)</label>
-                    <input type="number" value={goalPro} onChange={(e) => setGoalPro(e.target.value)} style={styles.input} />
-                  </div>
-                  <div>
-                    <label style={styles.label}>Carbs (g)</label>
-                    <input type="number" value={goalCarb} onChange={(e) => setGoalCarb(e.target.value)} style={styles.input} />
-                  </div>
-                  <div>
-                    <label style={styles.label}>Fat (g)</label>
-                    <input type="number" value={goalFat} onChange={(e) => setGoalFat(e.target.value)} style={styles.input} />
-                  </div>
+                ))}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button style={styles.primaryBtn} onClick={handleUpdateLog}>Save Changes</button>
+                  <button style={styles.secondaryBtnFull} onClick={() => setEditingLog(null)}>Cancel</button>
                 </div>
-                <button type="submit" style={styles.primaryBtn}>Save Goals</button>
-              </form>
+              </div>
             )}
 
-            <div style={styles.card}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0 }}>Meal Library</h3>
-                <button style={styles.secondaryBtn} onClick={() => setShowAddLib(!showAddLib)}>{showAddLib ? 'Close' : '+ Saved Meal'}</button>
-              </div>
-
-              {showAddLib && (
-                <form onSubmit={handleSaveToLibrary} style={{ marginTop: '12px' }}>
-                  <input type="text" placeholder="Meal Name (e.g. Chicken & Rice)" value={libName} onChange={(e) => setLibName(e.target.value)} style={styles.input} required />
-                  <div style={styles.grid2x2}>
-                    <input type="number" placeholder="Calories" value={libCal} onChange={(e) => setLibCal(e.target.value)} style={styles.input} />
-                    <input type="number" placeholder="Protein (g)" value={libPro} onChange={(e) => setLibPro(e.target.value)} style={styles.input} />
-                    <input type="number" placeholder="Carbs (g)" value={libCarb} onChange={(e) => setLibCarb(e.target.value)} style={styles.input} />
-                    <input type="number" placeholder="Fat (g)" value={libFat} onChange={(e) => setLibFat(e.target.value)} style={styles.input} />
+            {(selectedDateLog ? [selectedDateLog] : history).map((log) => (
+              <div key={log.id} style={styles.card}>
+                {selectedDateLog && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '-20px' }}>
+                    <button style={styles.cancelBtn} onClick={() => setSelectedDateLog(null)}>✕</button>
                   </div>
-                  <button type="submit" style={styles.primaryBtn}>Save Meal to Library</button>
-                </form>
-              )}
-
-              <div style={{ marginTop: '12px' }}>
-                {mealLibrary.length === 0 ? (
-                  <p style={{ color: '#666', fontSize: '0.85rem' }}>No saved meals yet. Add one above!</p>
-                ) : (
-                  mealLibrary.map((m) => (
-                    <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #2A2A2A' }}>
-                      <div>
-                        <strong>{m.name}</strong>
-                        <div style={{ color: '#888', fontSize: '0.75rem' }}>{m.calories} kcal | P:{m.protein}g C:{m.carbs}g F:{m.fat}g</div>
-                      </div>
-                      <button style={styles.cancelBtn} onClick={() => deleteLibraryMeal(m.id)}>✕</button>
-                    </div>
-                  ))
                 )}
-              </div>
-            </div>
 
-            <div style={{ margin: '16px 0' }}>
-              <h3>Today's Meals</h3>
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-                <input type="text" placeholder="Add Slot Name (e.g., Pre-Workout)" value={newSlotName} onChange={(e) => setNewSlotName(e.target.value)} style={{ ...styles.input, marginBottom: 0 }} />
-                <button style={styles.secondaryBtn} onClick={handleAddSlot}>+ Slot</button>
-              </div>
-
-              {mealSlots.map((slot) => {
-                const logsInSlot = nutritionLogs.filter((l) => (l.slot_name || 'Breakfast') === slot);
-                return (
-                  <div key={slot} style={styles.card}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <h4 style={{ margin: 0, color: '#00E676' }}>{slot}</h4>
-                      <button style={{ ...styles.cancelBtn, fontSize: '0.8rem' }} onClick={() => removeSlot(slot)}>Remove Slot</button>
-                    </div>
-
-                    {mealLibrary.length > 0 && (
-                      <select
-                        onChange={(e) => {
-                          const meal = mealLibrary.find((m) => m.id === e.target.value);
-                          if (meal) logMealFromLibrary(slot, meal);
-                          e.target.value = '';
-                        }}
-                        style={{ ...styles.input, backgroundColor: '#1A1A1A' }}
-                      >
-                        <option value="">+ Add meal from library...</option>
-                        {mealLibrary.map((m) => (
-                          <option key={m.id} value={m.id}>{m.name} ({m.calories} kcal)</option>
-                        ))}
-                      </select>
-                    )}
-
-                    {logsInSlot.length === 0 ? (
-                      <p style={{ color: '#666', fontSize: '0.8rem', margin: '4px 0' }}>Empty</p>
-                    ) : (
-                      logsInSlot.map((item) => (
-                        <div key={item.id} style={styles.logItem}>
-                          <div>
-                            <strong>{item.food_name}</strong>
-                            <div style={{ fontSize: '0.75rem', color: '#888' }}>
-                              {item.calories} kcal | P: {item.protein}g | C: {item.carbs}g | F: {item.fat}g
-                            </div>
-                          </div>
-                          <button style={styles.cancelBtn} onClick={() => deleteNutritionLog(item.id)}>✕</button>
-                        </div>
-                      ))
-                    )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '8px', alignItems: 'center' }}>
+                  <strong style={{ color: '#00E676', fontSize: '1.15rem' }}>{log.template_name}</strong>
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <button
+                      style={{ ...styles.secondaryBtn, padding: '4px 8px', fontSize: '0.75rem', marginRight: '6px' }}
+                      onClick={() => setEditingLog(JSON.parse(JSON.stringify(log)))}
+                    >
+                      Edit
+                    </button>
+                    <button style={{ ...styles.cancelBtn, fontSize: '0.85rem' }} onClick={() => deleteWorkoutLog(log.id)}>✕</button>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+
+                <span style={{ color: '#666', fontSize: '0.75rem', display: 'block', marginBottom: '16px' }}>
+                  {new Date(log.completed_at).toLocaleDateString('en-US', {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                  })}
+                </span>
+
+                {log.exercises?.map((exercise, idx) => (
+                  <div key={idx} style={{ marginBottom: '14px' }}>
+                    <div style={{ fontSize: '0.95rem', color: '#FFF', fontWeight: 'bold', marginBottom: '6px' }}>
+                      {exercise.name}
+                    </div>
+                    <div style={{ backgroundColor: '#181818', padding: '8px 10px', borderRadius: '8px' }}>
+                      {exercise.sets?.map((set, setIdx) => (
+                        <div
+                          key={setIdx}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            fontSize: '0.85rem',
+                            padding: '5px 0',
+                            borderBottom: setIdx !== exercise.sets.length - 1 ? '1px solid #252525' : 'none',
+                          }}
+                        >
+                          <span style={{ color: '#888' }}>Set {set.set_number || setIdx + 1}</span>
+                          <span style={{ color: '#DDD', fontWeight: 'bold' }}>{set.weight} lbs × {set.reps} reps</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {history.length === 0 && (
+              <div style={styles.emptyState}>Finish your first workout and it will show up here.</div>
+            )}
           </div>
         )}
       </main>
-
-      <nav style={styles.bottomNav}>
-        <button style={activeTab === 'gym' ? styles.activeNavBtn : styles.navBtn} onClick={() => setActiveTab('gym')}>🏋️ Gym</button>
-        <button style={activeTab === 'nutrition' ? styles.activeNavBtn : styles.navBtn} onClick={() => setActiveTab('nutrition')}>🥗 Nutrition</button>
-      </nav>
     </div>
   );
 }
 
 const styles = {
-  appContainer: { backgroundColor: '#121212', color: '#E0E0E0', minHeight: '100vh', paddingBottom: '80px', fontFamily: 'sans-serif' },
-  header: { padding: '16px', backgroundColor: '#1E1E1E', borderBottom: '1px solid #2C2C2C' },
+  appContainer: {
+    backgroundColor: '#121212',
+    color: '#E0E0E0',
+    minHeight: '100vh',
+    paddingBottom: '32px',
+    fontFamily: 'sans-serif',
+  },
+  header: {
+    padding: '16px',
+    backgroundColor: '#1E1E1E',
+    borderBottom: '1px solid #2C2C2C',
+    position: 'sticky',
+    top: 0,
+    zIndex: 20,
+  },
   title: { margin: 0, fontSize: '1.2rem', color: '#00E676', letterSpacing: '1px' },
-  logoutBtn: { backgroundColor: '#2A2A2A', color: '#FF5252', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' },
-  content: { padding: '16px', maxWidth: '500px', margin: '0 auto' },
+  headerSubtitle: { color: '#777', fontSize: '0.72rem', marginTop: '2px' },
+  logoutBtn: {
+    backgroundColor: '#2A2A2A',
+    color: '#FF5252',
+    border: 'none',
+    padding: '7px 12px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+  },
+  content: { padding: '16px', maxWidth: '560px', margin: '0 auto' },
   subTabNav: { display: 'flex', gap: '8px', marginBottom: '16px' },
-  subTab: { flex: 1, padding: '8px', background: '#1E1E1E', border: 'none', color: '#888', borderRadius: '6px' },
-  activeSubTab: { flex: 1, padding: '8px', background: '#2C2C2C', border: 'none', color: '#00E676', borderRadius: '6px', fontWeight: 'bold' },
-  card: { backgroundColor: '#1E1E1E', borderRadius: '12px', padding: '16px', marginBottom: '16px', border: '1px solid #2A2A2A' },
-  lifesumCard: { backgroundColor: '#1C251E', borderRadius: '16px', padding: '16px', marginBottom: '16px', border: '1px solid #00E67644' },
-  calCircleBox: { textAlign: 'center', margin: '16px 0' },
-  macroRow: { display: 'flex', gap: '12px', marginTop: '16px' },
-  macroCol: { flex: 1 },
-  progressBarBg: { backgroundColor: '#121212', height: '6px', borderRadius: '3px', overflow: 'hidden' },
-  progressBarFill: { height: '100%', borderRadius: '3px', transition: 'width 0.3s ease' },
-  label: { fontSize: '0.75rem', color: '#888', display: 'block', marginBottom: '4px' },
-  input: { width: '100%', padding: '10px', marginBottom: '10px', backgroundColor: '#2A2A2A', border: '1px solid #333', color: '#FFF', borderRadius: '6px', boxSizing: 'border-box' },
-  primaryBtn: { width: '100%', padding: '12px', backgroundColor: '#00E676', color: '#000', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', marginTop: '8px' },
-  secondaryBtn: { padding: '8px 12px', backgroundColor: '#2A2A2A', color: '#FFF', border: '1px solid #444', borderRadius: '6px', cursor: 'pointer' },
-  startBtn: { width: '100%', padding: '10px', backgroundColor: '#2979FF', color: '#FFF', border: 'none', borderRadius: '6px', fontWeight: 'bold' },
-  cancelBtn: { backgroundColor: 'transparent', color: '#FF5252', border: 'none', fontSize: '1.1rem', cursor: 'pointer' },
-  exerciseBox: { backgroundColor: '#252525', padding: '12px', borderRadius: '8px', margin: '12px 0' },
-  setRow: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' },
-  setFormInput: { width: '60px', padding: '6px', backgroundColor: '#1A1A1A', border: '1px solid #444', color: '#FFF', borderRadius: '4px', textAlign: 'center' },
-  iconBtn: { background: 'none', border: 'none', color: '#888', cursor: 'pointer', padding: '4px' },
-  grid2x2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
-  logItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: '#252525', borderRadius: '6px', marginTop: '8px' },
-  bottomNav: { position: 'fixed', bottom: 0, left: 0, right: 0, height: '60px', backgroundColor: '#1E1E1E', borderTop: '1px solid #2C2C2C', display: 'flex' },
-  navBtn: { flex: 1, background: 'none', border: 'none', color: '#888', fontSize: '1rem', cursor: 'pointer' },
-  activeNavBtn: { flex: 1, background: 'none', border: 'none', color: '#00E676', fontSize: '1rem', fontWeight: 'bold', borderTop: '2px solid #00E676', cursor: 'pointer' },
-  calendarGrid: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', marginTop: '12px' },
-  calendarDay: { padding: '6px', borderRadius: '6px', textAlign: 'center', fontSize: '0.85rem' }
+  subTab: {
+    flex: 1,
+    padding: '10px',
+    background: '#1E1E1E',
+    border: '1px solid #2A2A2A',
+    color: '#888',
+    borderRadius: '8px',
+    cursor: 'pointer',
+  },
+  activeSubTab: {
+    flex: 1,
+    padding: '10px',
+    background: '#203026',
+    border: '1px solid #00E67655',
+    color: '#00E676',
+    borderRadius: '8px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  card: {
+    backgroundColor: '#1E1E1E',
+    borderRadius: '12px',
+    padding: '16px',
+    marginBottom: '16px',
+    border: '1px solid #2A2A2A',
+  },
+  input: {
+    width: '100%',
+    padding: '11px',
+    marginBottom: '10px',
+    backgroundColor: '#2A2A2A',
+    border: '1px solid #3A3A3A',
+    color: '#FFF',
+    borderRadius: '7px',
+    boxSizing: 'border-box',
+  },
+  workoutTitleInput: {
+    width: '100%',
+    background: 'transparent',
+    border: 'none',
+    color: '#00E676',
+    fontSize: '1.25rem',
+    fontWeight: 'bold',
+    outline: 'none',
+    padding: '4px 0',
+  },
+  exerciseNameInput: {
+    flex: 1,
+    minWidth: 0,
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '1px solid #444',
+    color: '#FFF',
+    fontSize: '1.05rem',
+    fontWeight: 'bold',
+    outline: 'none',
+    padding: '5px 0',
+  },
+  primaryBtn: {
+    width: '100%',
+    padding: '13px',
+    backgroundColor: '#00E676',
+    color: '#000',
+    border: 'none',
+    borderRadius: '9px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    marginTop: '10px',
+  },
+  secondaryBtn: {
+    padding: '8px 12px',
+    backgroundColor: '#2A2A2A',
+    color: '#FFF',
+    border: '1px solid #444',
+    borderRadius: '7px',
+    cursor: 'pointer',
+  },
+  secondaryBtnFull: {
+    width: '100%',
+    padding: '10px 12px',
+    backgroundColor: '#2A2A2A',
+    color: '#FFF',
+    border: '1px solid #444',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    marginTop: '8px',
+  },
+  startBtn: {
+    width: '100%',
+    padding: '11px',
+    backgroundColor: '#2979FF',
+    color: '#FFF',
+    border: 'none',
+    borderRadius: '8px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  freestyleBtn: {
+    width: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '10px',
+    padding: '14px',
+    backgroundColor: '#203026',
+    color: '#00E676',
+    border: '1px solid #00E67666',
+    borderRadius: '10px',
+    cursor: 'pointer',
+    textAlign: 'left',
+  },
+  buttonSubtext: { display: 'block', color: '#8BA393', fontWeight: 'normal', marginTop: '2px' },
+  startActions: { marginBottom: '18px' },
+  cancelBtn: {
+    backgroundColor: 'transparent',
+    color: '#FF5252',
+    border: 'none',
+    fontSize: '0.95rem',
+    cursor: 'pointer',
+  },
+  removeExerciseBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#FF5252',
+    cursor: 'pointer',
+    padding: '4px 6px',
+    fontSize: '1rem',
+  },
+  exerciseBox: {
+    backgroundColor: '#1E1E1E',
+    padding: '14px',
+    borderRadius: '12px',
+    marginBottom: '14px',
+    border: '1px solid #303030',
+  },
+  previousSummary: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '10px',
+    margin: '12px 0 8px',
+    padding: '8px 10px',
+    borderRadius: '8px',
+    backgroundColor: '#17251C',
+    color: '#B9EFCB',
+    fontSize: '0.78rem',
+  },
+  previousMeta: { color: '#779381', fontWeight: 'normal' },
+  smallBtn: {
+    border: '1px solid #00E67655',
+    background: '#21382A',
+    color: '#00E676',
+    borderRadius: '6px',
+    padding: '5px 7px',
+    fontSize: '0.7rem',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  setHeaderRow: {
+    display: 'grid',
+    gridTemplateColumns: '34px minmax(64px, 1fr) 72px 72px 28px',
+    gap: '6px',
+    alignItems: 'center',
+    color: '#666',
+    fontSize: '0.65rem',
+    fontWeight: 'bold',
+    margin: '12px 0 5px',
+    textAlign: 'center',
+  },
+  setGridRow: {
+    display: 'grid',
+    gridTemplateColumns: '34px minmax(64px, 1fr) 72px 72px 28px',
+    gap: '6px',
+    alignItems: 'center',
+    marginBottom: '8px',
+  },
+  setNumber: { color: '#888', fontSize: '0.8rem', textAlign: 'center' },
+  previousSetValue: {
+    color: '#8FA798',
+    fontSize: '0.76rem',
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+  },
+  setFormInput: {
+    width: '100%',
+    minWidth: 0,
+    padding: '8px 4px',
+    backgroundColor: '#151515',
+    border: '1px solid #444',
+    color: '#FFF',
+    borderRadius: '6px',
+    textAlign: 'center',
+    boxSizing: 'border-box',
+  },
+  editSetRow: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' },
+  iconBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#888',
+    cursor: 'pointer',
+    padding: '4px',
+  },
+  addExerciseBtn: {
+    width: '100%',
+    padding: '12px',
+    background: 'transparent',
+    color: '#00E676',
+    border: '1px dashed #00E67677',
+    borderRadius: '9px',
+    cursor: 'pointer',
+    marginBottom: '4px',
+  },
+  calendarGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(7, 1fr)',
+    gap: '4px',
+    marginTop: '12px',
+  },
+  calendarDay: {
+    padding: '7px 4px',
+    borderRadius: '6px',
+    textAlign: 'center',
+    fontSize: '0.85rem',
+  },
+  eyebrow: { color: '#777', fontSize: '0.66rem', fontWeight: 'bold', letterSpacing: '0.08em' },
+  mutedText: { color: '#888', fontSize: '0.84rem', margin: '8px 0 12px', lineHeight: 1.4 },
+  emptyState: {
+    color: '#777',
+    padding: '20px',
+    border: '1px dashed #333',
+    borderRadius: '10px',
+    textAlign: 'center',
+    fontSize: '0.85rem',
+  },
 };
