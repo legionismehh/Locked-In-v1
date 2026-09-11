@@ -27,6 +27,7 @@ export default function App() {
   const [showNewTemplate, setShowNewTemplate] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateExercises, setNewTemplateExercises] = useState(['']);
+  const [openExerciseSearch, setOpenExerciseSearch] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -76,6 +77,133 @@ export default function App() {
   };
 
   const normalizeExerciseName = (name = '') => name.trim().toLowerCase();
+
+
+  const compactExerciseName = (name = '') =>
+    normalizeExerciseName(name)
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const levenshteinDistance = (a = '', b = '') => {
+    const left = compactExerciseName(a);
+    const right = compactExerciseName(b);
+
+    if (!left) return right.length;
+    if (!right) return left.length;
+
+    const previous = Array.from({ length: right.length + 1 }, (_, i) => i);
+
+    for (let i = 1; i <= left.length; i += 1) {
+      const current = [i];
+
+      for (let j = 1; j <= right.length; j += 1) {
+        const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+        current[j] = Math.min(
+          current[j - 1] + 1,
+          previous[j] + 1,
+          previous[j - 1] + cost
+        );
+      }
+
+      for (let j = 0; j < current.length; j += 1) previous[j] = current[j];
+    }
+
+    return previous[right.length];
+  };
+
+  const exerciseLibrary = (() => {
+    const seen = new Set();
+    const library = [];
+
+    for (const log of history) {
+      for (const exercise of log.exercises || []) {
+        const normalized = normalizeExerciseName(exercise.name);
+        if (!normalized || seen.has(normalized)) continue;
+
+        seen.add(normalized);
+        library.push({
+          name: exercise.name.trim(),
+          sets: exercise.sets || [],
+          completedAt: log.completed_at,
+          workoutName: log.template_name,
+        });
+      }
+    }
+
+    return library;
+  })();
+
+  const getExerciseSuggestions = (query) => {
+    const cleanedQuery = compactExerciseName(query);
+    const queryWords = cleanedQuery.split(' ').filter(Boolean);
+
+    return exerciseLibrary
+      .map((item, recentIndex) => {
+        const cleanedName = compactExerciseName(item.name);
+        const nameWords = cleanedName.split(' ').filter(Boolean);
+        let score = 0;
+
+        if (!cleanedQuery) {
+          score = 500 - recentIndex;
+        } else {
+          if (cleanedName === cleanedQuery) score += 1000;
+          if (cleanedName.startsWith(cleanedQuery)) score += 700;
+          if (cleanedName.includes(cleanedQuery)) score += 600;
+
+          for (const word of queryWords) {
+            if (nameWords.some((nameWord) => nameWord === word)) {
+              score += 180;
+              continue;
+            }
+
+            if (nameWords.some((nameWord) => nameWord.startsWith(word) || word.startsWith(nameWord))) {
+              score += 120;
+              continue;
+            }
+
+            const closeWord = nameWords.some((nameWord) => {
+              const distance = levenshteinDistance(word, nameWord);
+              const maxDistance = Math.max(1, Math.floor(Math.max(word.length, nameWord.length) * 0.3));
+              return distance <= maxDistance;
+            });
+
+            if (closeWord) score += 75;
+          }
+
+          const wholeNameDistance = levenshteinDistance(cleanedQuery, cleanedName);
+          const allowedDistance = Math.max(1, Math.floor(Math.max(cleanedQuery.length, cleanedName.length) * 0.25));
+          if (wholeNameDistance <= allowedDistance) score += 90;
+        }
+
+        // Slightly favor exercises used more recently when match quality is otherwise similar.
+        score += Math.max(0, 25 - recentIndex);
+
+        return { ...item, score };
+      })
+      .filter((item) => item.score > 25)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6);
+  };
+
+  const selectExerciseSuggestion = (exIndex, suggestion) => {
+    setActiveWorkout((current) => {
+      const updated = JSON.parse(JSON.stringify(current));
+      const exercise = updated.exercises[exIndex];
+
+      exercise.name = suggestion.name;
+      exercise.previousSets = (suggestion.sets || []).map((set) => ({
+        weight: set.weight ?? '',
+        reps: set.reps ?? '',
+      }));
+      exercise.previousCompletedAt = suggestion.completedAt;
+      exercise.previousWorkoutName = suggestion.workoutName;
+
+      return updated;
+    });
+
+    setOpenExerciseSearch(null);
+  };
 
   const findPreviousExercise = (exerciseName) => {
     const normalized = normalizeExerciseName(exerciseName);
@@ -430,13 +558,57 @@ export default function App() {
             {activeWorkout.exercises.map((exercise, exIdx) => (
               <div key={exIdx} style={styles.exerciseBox}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
-                  <input
-                    type="text"
-                    value={exercise.name}
-                    placeholder="Exercise name"
-                    onChange={(e) => updateExerciseName(exIdx, e.target.value)}
-                    style={styles.exerciseNameInput}
-                  />
+                  <div style={styles.exerciseSearchWrap}>
+                    <input
+                      type="text"
+                      value={exercise.name}
+                      placeholder="Search or type exercise name"
+                      onChange={(e) => {
+                        updateExerciseName(exIdx, e.target.value);
+                        setOpenExerciseSearch(exIdx);
+                      }}
+                      onFocus={() => setOpenExerciseSearch(exIdx)}
+                      onBlur={() => {
+                        window.setTimeout(() => {
+                          setOpenExerciseSearch((current) => current === exIdx ? null : current);
+                        }, 160);
+                      }}
+                      autoComplete="off"
+                      style={styles.exerciseNameInput}
+                    />
+
+                    {openExerciseSearch === exIdx && getExerciseSuggestions(exercise.name).length > 0 && (
+                      <div style={styles.exerciseDropdown}>
+                        {getExerciseSuggestions(exercise.name).map((suggestion) => {
+                          const lastSet = suggestion.sets?.[0];
+                          const lastSummary = lastSet
+                            ? `${lastSet.weight ?? '-'} × ${lastSet.reps ?? '-'}`
+                            : 'Previous workout';
+
+                          return (
+                            <button
+                              key={`${suggestion.name}-${suggestion.completedAt || ''}`}
+                              type="button"
+                              style={styles.exerciseSuggestion}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => selectExerciseSuggestion(exIdx, suggestion)}
+                            >
+                              <div style={styles.exerciseSuggestionText}>
+                                <strong style={styles.exerciseSuggestionName}>{suggestion.name}</strong>
+                                <span style={styles.exerciseSuggestionMeta}>
+                                  Last: {lastSummary}
+                                  {suggestion.completedAt
+                                    ? ` • ${new Date(suggestion.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+                                    : ''}
+                                </span>
+                              </div>
+                              <span style={styles.suggestionArrow}>›</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
 
                   <div style={{ display: 'flex', gap: '2px', flexShrink: 0 }}>
                     <button style={styles.iconBtn} onClick={() => moveExercise(exIdx, 'up')} disabled={exIdx === 0}>▲</button>
@@ -852,6 +1024,61 @@ const styles = {
     fontWeight: 'bold',
     outline: 'none',
     padding: '5px 0',
+  },
+  exerciseSearchWrap: {
+    position: 'relative',
+    flex: 1,
+    minWidth: 0,
+    zIndex: 5,
+  },
+  exerciseDropdown: {
+    position: 'absolute',
+    top: 'calc(100% + 6px)',
+    left: 0,
+    right: 0,
+    backgroundColor: '#171717',
+    border: '1px solid #3A3A3A',
+    borderRadius: '9px',
+    overflow: 'hidden',
+    boxShadow: '0 10px 28px rgba(0, 0, 0, 0.45)',
+    zIndex: 50,
+    maxHeight: '280px',
+    overflowY: 'auto',
+  },
+  exerciseSuggestion: {
+    width: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    padding: '10px 12px',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '1px solid #292929',
+    color: '#FFF',
+    cursor: 'pointer',
+    textAlign: 'left',
+  },
+  exerciseSuggestionText: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '3px',
+    minWidth: 0,
+  },
+  exerciseSuggestionName: {
+    fontSize: '0.9rem',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  exerciseSuggestionMeta: {
+    color: '#8FA798',
+    fontSize: '0.72rem',
+  },
+  suggestionArrow: {
+    color: '#00E676',
+    fontSize: '1.2rem',
+    flexShrink: 0,
   },
   primaryBtn: {
     width: '100%',
